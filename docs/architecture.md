@@ -8,7 +8,7 @@
 - 算法整体思路不变。为了得到一致的结果，允许做必要的小改动，比如显式规定排序顺序（D2）。
 - 结果一致的定义（D3）：
   - 路集、割集：每个集合内部排序，集合列表再按（长度、字典序）排序，之后完全相等。
-  - 可用度：与参考答案的绝对误差 ≤ 1e-12（暂定）。
+  - 可用度：和参考答案 CSV 比较时，绝对误差 ≤ 1e-9（CSV 只保留 9 位小数）；和暴力枚举比较时，绝对误差 ≤ 1e-12。
   - 中间表示（布尔表达式、SDP 项的顺序）不要求逐字一致。
 - 性能预期与 C++ 持平。耗时主要由算法决定，换语言改变不了（D1）。
 - 不考虑论文复现（D11）。
@@ -318,7 +318,7 @@ graph LR
 ci.yml（push / PR）
 ├─ Linux、macOS、Windows：cargo fmt --check、cargo clippy -D warnings、cargo test
 ├─ Linux：cargo test --features parallel
-└─ Linux：cargo check --target wasm32-unknown-unknown + wasm 冒烟测试
+└─ Linux：cargo check --target wasm32-unknown-unknown + wasm 冒烟测试（阶段 3 才加）
 
 pages.yml（push 到 main）
 └─ 构建 demo → GitHub Pages

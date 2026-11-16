@@ -24,7 +24,7 @@
 ## D3 "结果一致"的定义（已定）
 
 - 路集、割集：每个集合内部排序，集合列表再按（长度、字典序）排序，之后完全相等。
-- 可用度：与标准答案的绝对误差 ≤ 1e-12。这个阈值是暂定的，第一轮对拍后可以调整。
+- 可用度：和参考答案 CSV 比较时，绝对误差 ≤ 1e-9；和暴力枚举比较时，绝对误差 ≤ 1e-12。参考 CSV 只保留 9 位小数，舍入误差最大 5e-10，再加上浮点误差，正好卡在 5e-10 会误判，所以留一倍余量（2026-11-16 修改，核对结果见 `tools/check_reference.py`）。
 - 中间表示不要求逐字一致，包括布尔表达式字符串和 SDP 项的顺序。
 
 原因：现有 C++ 本身就做不到跨平台逐比特一致。一是 `sdp.cpp` 里 `std::sort` 对等价元素的顺序不确定；二是 `-march=native` 下可能生成 FMA 指令，影响浮点末位。
@@ -73,6 +73,12 @@ App 本身不依赖 Python。
 - 大拓扑通过环境变量 `NETAVAIL_REFERENCE_DIR` 引用，测试标记为 `#[ignore]`，不进仓库。目录总共 9.2G，其中 `Germany_50/BoolExprSDP` 就有 8G。
 
 PyRBD-Suite 的旧 benchmark CSV 只记录耗时和集合个数，只能用于性能对比。
+
+2026-11-16 用 `tools/check_reference.py` 核对了 8 个小拓扑，结论如下：
+- pickle 和 `PyRBD-Suite/data/topologies/<T>.json` 的节点、边完全一致，编号相同。
+- 路集恰好是所有**无捷径路径**（induced / chordless path：路径上任意两个不相邻的节点之间没有边）。节点也会故障，所以有捷径的路径包含了更短路径的全部节点，不是最小路集。例如完全图 dfn-bwin 中，每个节点对只有 `[s, d]` 一条。
+- 每个割集都是路集的极小碰撞集（能切断所有路径，去掉任何一个节点就切不断）。是否漏了割集，留给暴力验证检查。
+- 可用度按"所有节点取同一个 p、链路完美"计算，和参考值的差 ≤ 5e-10（在 1e-9 阈值内）。
 
 ## D10 第一批移植 `minimalpaths` 和 `mcs`（已定）
 
@@ -295,7 +301,7 @@ core 稳定之前，前端只是一个用来验证的 demo：原生 TS + Vite，
 
 ## D35 CI 和工具链（已定）
 
-- `ci.yml`：在 Linux、macOS、Windows 上跑 `fmt --check`、`clippy -D warnings`、`test`。Linux 上还要跑 `--features parallel`、wasm32 目标检查、wasm 冒烟测试。
+- `ci.yml`：在 Linux、macOS、Windows 上跑 `fmt --check`、`clippy -D warnings`、`test`。Linux 上还要跑 `--features parallel`、wasm32 目标检查、wasm 冒烟测试。wasm 冒烟测试要等阶段 3 有了 `netavail-wasm` 才加（2026-11-16 补充）。
 - `pages.yml`：push 到 main 后构建 demo，部署到 Pages。
 - 用 `rust-toolchain.toml` 固定 Rust 版本。
 - 大拓扑的参考答案只在本地，`--ignored` 测试只能在本地手动跑。
