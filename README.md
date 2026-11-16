@@ -23,6 +23,7 @@ GitHub's "Cite this repository" button gives the entries from [CITATION.cff](CIT
   Block Diagram Evaluation Tool", RNDM 2025.
 - S. Janardhanan, Y. Chen, W. Kellerer, C. Mas-Machuca, "Leveraging Minimal Path Sets
   for Reliability Block Diagram Evaluation", IEEE FNWF 2025.
+  [IEEE Xplore](https://ieeexplore.ieee.org/document/11317672)
 - S. Janardhanan, Y. Chen, W. Kellerer, C. Mas-Machuca, "Fast-MCS: A Scalable
   Open-Source Tool to Find Minimal Cut Sets", arXiv:2602.16686, 2026.
 

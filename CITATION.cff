@@ -39,6 +39,7 @@ references:
     conference:
       name: "IEEE Future Networks World Forum (FNWF)"
     year: 2025
+    url: "https://ieeexplore.ieee.org/document/11317672"
     repository-code: "https://github.com/shakthij98/PyRBD3"
   - type: article
     title: "Fast-MCS: A Scalable Open-Source Tool to Find Minimal Cut Sets"

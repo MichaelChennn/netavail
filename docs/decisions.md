@@ -96,9 +96,18 @@ MIT 本身不要求引用论文，引用的要求通过以下方式落实：
 - README 的 Citing 一节。
 - 每个算法模块的文档注释写明出处论文。
 
-待办：
-- 确认算法和论文的对应关系。目前已知：`cnf_tree`、`shannon`、`multiplication` 来自 PyRBD3；`combination`、`combination_matrix`，以及 MCS 和 pathset 的可用度计算来自 PyRBD++。Fast-MCS 对应哪个算法还没确认。
-- 确认 PyRBD3 论文（FNWF 2025）是否已正式发表，上游 README 里还写着 "submitted"。
+算法与论文的对应关系：
+
+| 算法 | 引用论文 | 状态 |
+|---|---|---|
+| `cnf_tree`（割集） | Fast-MCS | 已确认（2026-11-16） |
+| `shannon`、`multiplication`（割集）、SDP 可用度 | PyRBD3 | 推断：这些算法在旧的 pyrbd3 包里 |
+| `combination`、`combination_matrix`（割集）、MCS / pathset 可用度 | PyRBD++ | 推断：这些算法在旧的 pyrbd_plusplus 包里 |
+| `minimalpaths`（路集） | 待确认 | |
+
+注意：`cnf_tree` 的旧实现放在 pyrbd3 包里，但应该引用的是 Fast-MCS 论文。所以"代码在哪个包"不能直接当作"引用哪篇论文"，两条推断项在移植对应模块时还要再确认一次。
+
+PyRBD3 论文已正式发表于 IEEE FNWF 2025：https://ieeexplore.ieee.org/document/11317672
 
 ---
 
