@@ -1,0 +1,59 @@
+cff-version: 1.2.0
+message: >-
+  netavail is a Rust implementation of algorithms published in the papers
+  listed under "references". If you use netavail in your research, please cite
+  the paper(s) for the algorithms you used (see the "Citing" section of the
+  README).
+title: netavail
+type: software
+license: MIT
+repository-code: "https://github.com/MichaelChennn/netavail"
+authors:
+  - family-names: Chen
+    given-names: Yaxuan
+references:
+  - type: conference-paper
+    title: "PyRBD++: An Open-Source Fast Reliability Block Diagram Evaluation Tool"
+    authors:
+      - family-names: Janardhanan
+        given-names: Shakthivelu
+      - family-names: Chen
+        given-names: Yaxuan
+      - family-names: Mas-Machuca
+        given-names: Carmen
+    conference:
+      name: "International Workshop on Resilient Networks Design and Modeling (RNDM)"
+    year: 2025
+    repository-code: "https://github.com/shakthij98/PyRBD_plusplus"
+  - type: conference-paper
+    title: "Leveraging Minimal Path Sets for Reliability Block Diagram Evaluation"
+    authors:
+      - family-names: Janardhanan
+        given-names: Shakthivelu
+      - family-names: Chen
+        given-names: Yaxuan
+      - family-names: Kellerer
+        given-names: Wolfgang
+      - family-names: Mas-Machuca
+        given-names: Carmen
+    conference:
+      name: "IEEE Future Networks World Forum (FNWF)"
+    year: 2025
+    repository-code: "https://github.com/shakthij98/PyRBD3"
+  - type: article
+    title: "Fast-MCS: A Scalable Open-Source Tool to Find Minimal Cut Sets"
+    authors:
+      - family-names: Janardhanan
+        given-names: Shakthivelu
+      - family-names: Chen
+        given-names: Yaxuan
+      - family-names: Kellerer
+        given-names: Wolfgang
+      - family-names: Mas-Machuca
+        given-names: Carmen
+    journal: "arXiv preprint"
+    identifiers:
+      - type: other
+        value: "arXiv:2602.16686"
+    year: 2026
+    repository-code: "https://github.com/shakthij98/Fast-MCS"
