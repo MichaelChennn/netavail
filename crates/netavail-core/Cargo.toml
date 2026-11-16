@@ -1,0 +1,13 @@
+[package]
+name = "netavail-core"
+description = "Network availability algorithms: path sets, cut sets, availability"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Multi-threading (filled in at stage 5). CI already builds and tests with it on.
+parallel = []
+
+[dependencies]
