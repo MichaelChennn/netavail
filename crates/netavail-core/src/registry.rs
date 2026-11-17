@@ -4,7 +4,7 @@
 
 use crate::availability::AvailabilityAlgorithm;
 use crate::sets::minimalcuts::CutAlgorithm;
-use crate::sets::minimalpaths::PathAlgorithm;
+use crate::sets::minimalpaths::{Dfs, PathAlgorithm};
 
 /// Static description of an algorithm.
 #[derive(Debug)]
@@ -35,7 +35,7 @@ impl AlgoInfo {
     }
 }
 
-static PATHS: &[&dyn PathAlgorithm] = &[];
+static PATHS: &[&dyn PathAlgorithm] = &[&Dfs];
 static CUTS: &[&dyn CutAlgorithm] = &[];
 static AVAILABILITY: &[&dyn AvailabilityAlgorithm] = &[];
 
@@ -64,4 +64,39 @@ pub fn find_cut(key: &str) -> Option<&'static dyn CutAlgorithm> {
 /// Looks up an availability algorithm by id or old name.
 pub fn find_availability(key: &str) -> Option<&'static dyn AvailabilityAlgorithm> {
     AVAILABILITY.iter().copied().find(|a| a.info().matches(key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn finds_algorithms_by_id_or_old_name() {
+        assert_eq!(find_path("dfs").unwrap().info().id, "dfs");
+        assert_eq!(find_path("minimalpaths").unwrap().info().id, "dfs");
+        assert!(find_path("no_such_algorithm").is_none());
+    }
+
+    #[test]
+    fn ids_and_old_names_are_unique_and_names_fit_the_ui() {
+        let categories: [Vec<&AlgoInfo>; 3] = [
+            PATHS.iter().map(|a| a.info()).collect(),
+            CUTS.iter().map(|a| a.info()).collect(),
+            AVAILABILITY.iter().map(|a| a.info()).collect(),
+        ];
+        for infos in categories {
+            let mut keys = HashSet::new();
+            for info in infos {
+                assert!(
+                    info.name.chars().count() <= 18,
+                    "name too long: {}",
+                    info.name
+                );
+                for key in std::iter::once(info.id).chain(info.aliases.iter().copied()) {
+                    assert!(keys.insert(key), "duplicate id or old name: {key}");
+                }
+            }
+        }
+    }
 }

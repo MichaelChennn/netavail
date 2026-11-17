@@ -1,5 +1,9 @@
 //! Minimal path set algorithms.
 
+mod dfs;
+
+pub use dfs::Dfs;
+
 use crate::control::Control;
 use crate::error::Error;
 use crate::graph::Graph;

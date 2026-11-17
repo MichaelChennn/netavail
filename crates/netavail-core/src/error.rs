@@ -15,6 +15,10 @@ pub enum Error {
     SelfLoop { edge: usize, node: NodeId },
     #[error("edge {edge}: duplicate of edge {first}")]
     DuplicateEdge { edge: usize, first: usize },
+    #[error("invalid node pair ({src}, {dst}): nodes must differ and exist in the graph")]
+    InvalidPair { src: NodeId, dst: NodeId },
+    #[error("more than {limit} sets; raise the limit or pick a smaller topology")]
+    TooManySets { limit: usize },
     #[error("cancelled")]
     Cancelled,
 }

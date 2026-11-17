@@ -162,7 +162,7 @@ pub trait Prepared: Send + Sync {
 
 | 类别 | id | name | summary | 旧名 |
 |---|---|---|---|---|
-| 路集 | `dfs` | DFS | Enumerate all simple paths by depth-first search | `minimalpaths` |
+| 路集 | `dfs` | DFS | Enumerate chordless paths by depth-first search | `minimalpaths` |
 | 割集 | `decision_tree` | Decision tree | Branch on the most frequent node, multiply leaves (Fast-MCS) | `cnf_tree` |
 | 割集 | `shannon` | Shannon expansion | Recursively split on a pivot node, then combine | `shannon` |
 | 割集 | `path_product` | Path product | Multiply all path sets pairwise with absorption | `multiplication` |
