@@ -39,7 +39,7 @@ impl AvailabilityAlgorithm for CutDisjoint {
                 found: cuts.kind,
             });
         }
-        // Remove {src} and {dst}, then inverse the minimal cut sets
+        // Remove {src} and {dst}, then invert the minimal cut sets
         let mut pending: Vec<Term> = cuts
             .sets
             .iter()

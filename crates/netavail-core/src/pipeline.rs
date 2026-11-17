@@ -107,10 +107,11 @@ fn run_stages(
 ) -> Result<(), Error> {
     // A short scenario would make evaluate panic; in the browser that kills the Worker
     let node_count = g.node_count();
-    if let Some((scenario, p)) = scenarios
-        .iter()
-        .enumerate()
-        .find(|(_, p)| p.node_count() != node_count as usize)
+    if plan.availability.is_some()
+        && let Some((scenario, p)) = scenarios
+            .iter()
+            .enumerate()
+            .find(|(_, p)| p.node_count() != node_count as usize)
     {
         return Err(Error::ScenarioSize {
             scenario,
@@ -119,14 +120,15 @@ fn run_stages(
         });
     }
 
-    let paths = timed(ctl, src, dst, Stage::Paths, || {
+    let paths = with_stage_events(ctl, src, dst, Stage::Paths, || {
         plan.paths.find(g, src, dst, ctl)
     })?;
     result.path_count = Some(paths.sets.len());
 
     let cuts = match plan.cuts {
         Some(algo) => {
-            let cuts = timed(ctl, src, dst, Stage::Cuts, || algo.from_paths(&paths, ctl))?;
+            let cuts =
+                with_stage_events(ctl, src, dst, Stage::Cuts, || algo.from_paths(&paths, ctl))?;
             result.cut_count = Some(cuts.sets.len());
             Some(cuts)
         }
@@ -140,15 +142,15 @@ fn run_stages(
         SetKind::Paths => &paths,
         SetKind::Cuts => cuts.as_ref().expect("Plan::new requires a cut algorithm"),
     };
-    let prepared = timed(ctl, src, dst, Stage::Prepare, || algo.prepare(input, ctl))?;
-    result.availability = timed(ctl, src, dst, Stage::Evaluate, || {
+    let prepared = with_stage_events(ctl, src, dst, Stage::Prepare, || algo.prepare(input, ctl))?;
+    result.availability = with_stage_events(ctl, src, dst, Stage::Evaluate, || {
         Ok(scenarios.iter().map(|p| prepared.evaluate(p)).collect())
     })?;
     Ok(())
 }
 
 /// Runs one stage between Started and Finished; Finished is reported even on error.
-fn timed<T>(
+fn with_stage_events<T>(
     ctl: &dyn Control,
     src: NodeId,
     dst: NodeId,
@@ -398,5 +400,23 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!((results[0].src, results[0].dst), (0, 1));
         assert_eq!(results[0].error, None);
+    }
+
+    #[test]
+    fn plan_without_availability_ignores_scenarios() {
+        let plan = Plan::new(&Dfs, None, None).unwrap();
+
+        let result = run_pair(
+            &plan,
+            &chain(),
+            0,
+            2,
+            &[ProbabilityMap::uniform(2, 0.9)],
+            &NoControl,
+        );
+
+        assert_eq!(result.error, None);
+        assert_eq!(result.path_count, Some(1));
+        assert!(result.availability.is_empty());
     }
 }
