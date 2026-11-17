@@ -11,3 +11,8 @@ repository.workspace = true
 parallel = []
 
 [dependencies]
+blake3.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
