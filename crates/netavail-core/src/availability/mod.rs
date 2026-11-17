@@ -1,5 +1,9 @@
 //! Availability algorithms.
 
+mod cut_disjoint;
+
+pub use cut_disjoint::CutDisjoint;
+
 use crate::control::Control;
 use crate::error::Error;
 use crate::prob::ProbabilityMap;

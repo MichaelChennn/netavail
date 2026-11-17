@@ -1,7 +1,7 @@
 //! Error type shared by all of core.
 
 use crate::control::Cancelled;
-use crate::types::NodeId;
+use crate::types::{NodeId, SetKind};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
@@ -19,6 +19,8 @@ pub enum Error {
     InvalidPair { src: NodeId, dst: NodeId },
     #[error("more than {limit} sets; raise the limit or pick a smaller topology")]
     TooManySets { limit: usize },
+    #[error("expected {expected:?} as input, got {found:?}")]
+    WrongInputKind { expected: SetKind, found: SetKind },
     #[error("cancelled")]
     Cancelled,
 }

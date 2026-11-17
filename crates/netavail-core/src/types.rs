@@ -23,6 +23,11 @@ impl Lit {
         Lit(node << 1 | 1)
     }
 
+    /// Same node, opposite state.
+    pub fn negate(self) -> Lit {
+        Lit(self.0 ^ 1)
+    }
+
     pub fn node(self) -> NodeId {
         self.0 >> 1
     }
