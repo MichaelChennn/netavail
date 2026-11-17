@@ -175,10 +175,11 @@ pub trait Prepared: Send + Sync {
 ### 3.4 流水线（D29）
 
 ```rust
-pub struct Plan {
-    pub paths: &'static dyn PathAlgorithm,
-    pub cuts: Option<&'static dyn CutAlgorithm>,
-    pub availability: Option<&'static dyn AvailabilityAlgorithm>,
+pub struct Plan { /* private: paths, cuts, availability */ }
+impl Plan {
+    pub fn new(paths: &'static dyn PathAlgorithm,
+               cuts: Option<&'static dyn CutAlgorithm>,
+               availability: Option<&'static dyn AvailabilityAlgorithm>) -> Result<Plan, Error>;
 }
 
 pub fn run_pair(plan: &Plan, g: &Graph, src: NodeId, dst: NodeId,

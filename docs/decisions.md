@@ -306,6 +306,40 @@ core 稳定之前，前端只是一个用来验证的 demo：原生 TS + Vite，
 - 用 `rust-toolchain.toml` 固定 Rust 版本。
 - 大拓扑的参考答案只在本地，`--ignored` 测试只能在本地手动跑。
 
+## D36 阶段 2 实现中定下的细节（已定，2026-11-17）
+
+依赖和接口：
+- core 依赖 `blake3`（feature `pure`）和 `thiserror`；`serde`、`serde_json` 只在 io 里；`proptest` 只作 dev-dependency。这条修正 D21 的"core 不依赖其它 crate"。
+- `Topology::from_json` 接收 `&str`，不读文件；只有 `id`、`source`、`target` 是必填，其它字段有默认值。写出 JSON 等到阶段 3。
+- `CutAlgorithm::from_paths` 保留 D26 的名字，用 `#[allow(clippy::wrong_self_convention)]` 压掉 clippy 警告。
+- `dfs` 的 summary 改为 "Enumerate chordless paths by depth-first search"（D9）。
+- `AlgoInfo.citation` 是 `Option<Citation>`，因为不是每个算法都有论文。
+- 新增 `Lit::negate`，以及错误 `WrongInputKind`、`MissingCutAlgorithm`、`ScenarioSize`。
+- `Plan` 的字段是私有的，只能通过 `Plan::new` 创建，这样搭配检查绕不过去。
+- `run_pair` 只在选了可用度算法时检查场景长度，长度不对就报 `ScenarioSize`，不让 `evaluate` 越界 panic。
+- 阶段出错时，`Finished` 事件照样发出；已完成阶段的集合数保留在结果里。
+- `run_all` 在取消后不再开始新的节点对，返回的结果可能少于节点对数。它暂时串行，`parallel` feature 留空，到阶段 5 再接 rayon。
+
+测试：
+- 参考 Pathset CSV 的顺序和 `dfs` 的输出顺序不同，即使按长度稳定排序后也不同，所以只比较规范化后的结果。另外做过一次性核对，不在仓库里：在 8 个小拓扑的全部 1092 对上，Rust `dfs` 的输出和现在 PyRBD-Suite 的 `minimalpaths.cpp` 逐字节一致。
+- 小拓扑缺参考文件时测试直接失败。D34 说的"列为跳过"只用于大拓扑。
+- 暴力验证只生成连通图，每个用例取一个节点对，默认 256 个用例。
+- proptest 的回归文件只在发现真实 bug 时提交；变异检查产生的回归文件删掉。
+- 流水线端到端测试用"参考割集"替身代替割集算法，到阶段 4 换成注册表里的割集算法。
+
+推迟到后面阶段：
+- 缓存 key（§3.6）推迟到阶段 3，和 wasm `Engine` 一起实现。
+- 边的 `prob` 范围检查推迟到阶段 4（链路故障）；现在只检查节点概率。
+- `cut_disjoint` 的 `max_sets` 不限制不相交项的个数；项数上限到阶段 3（浏览器）再加。
+- 推迟到阶段 4，有了第一个割集算法时再做：
+  - 参考答案测试和暴力验证遍历 `registry::cut_algorithms()`。
+  - 把节点对合法性检查从 `dfs` 移到公共位置。
+- 下面几项等对应功能出现时再做：
+  - 吸收的单元测试，等移植 `absorb_list` 时写（D34 第 1 层）。
+  - 大拓扑的 `#[ignore]` 测试（读 `NETAVAIL_REFERENCE_DIR`）。
+  - 导入参考 CSV 时的合法性检查（D28）。
+  - `diff_sets` 同时比较 src、dst 和 kind，这项随 `netavail verify` 一起做。
+
 ---
 
 ## 尚未决定
