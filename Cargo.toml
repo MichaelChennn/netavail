@@ -9,6 +9,9 @@ license = "MIT"
 repository = "https://github.com/MichaelChennn/netavail"
 
 [workspace.dependencies]
+netavail-core = { path = "crates/netavail-core" }
 blake3 = { version = "1.8", features = ["pure"] }
 proptest = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"

@@ -42,9 +42,9 @@ jobs:
       - run: cargo test -p netavail-core --features parallel
 
   wasm:
-    name: core builds for wasm32
+    name: core and io build for wasm32
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check -p netavail-core --target wasm32-unknown-unknown
+      - run: cargo check -p netavail-core -p netavail-io --target wasm32-unknown-unknown

@@ -10,3 +10,4 @@ pub mod types;
 
 pub use error::Error;
 pub use graph::Graph;
+pub use prob::ProbabilityMap;
