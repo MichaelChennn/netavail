@@ -21,6 +21,14 @@ pub enum Error {
     TooManySets { limit: usize },
     #[error("expected {expected:?} as input, got {found:?}")]
     WrongInputKind { expected: SetKind, found: SetKind },
+    #[error("the availability algorithm needs cut sets, but no cut algorithm was chosen")]
+    MissingCutAlgorithm,
+    #[error("scenario {scenario} has probabilities for {nodes} nodes, the graph has {node_count}")]
+    ScenarioSize {
+        scenario: usize,
+        nodes: usize,
+        node_count: u32,
+    },
     #[error("cancelled")]
     Cancelled,
 }

@@ -30,6 +30,11 @@ impl ProbabilityMap {
         ProbabilityMap { values }
     }
 
+    /// Number of nodes this map has probabilities for.
+    pub fn node_count(&self) -> usize {
+        self.values.len() / 2
+    }
+
     /// p if `lit` is up, 1-p if down. Panics if the node is out of range.
     pub fn get(&self, lit: Lit) -> f64 {
         self.values[lit.0 as usize]

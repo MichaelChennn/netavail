@@ -1,0 +1,402 @@
+//! Runs the chosen algorithms for node pairs (architecture.md §3.4; D29).
+
+use crate::availability::AvailabilityAlgorithm;
+use crate::control::{Control, Stage, StageEvent};
+use crate::error::Error;
+use crate::graph::Graph;
+use crate::prob::ProbabilityMap;
+use crate::sets::minimalcuts::CutAlgorithm;
+use crate::sets::minimalpaths::PathAlgorithm;
+use crate::types::{NodeId, SetKind};
+
+/// A checked combination of algorithms; build it with [`Plan::new`].
+pub struct Plan {
+    paths: &'static dyn PathAlgorithm,
+    cuts: Option<&'static dyn CutAlgorithm>,
+    availability: Option<&'static dyn AvailabilityAlgorithm>,
+}
+
+impl Plan {
+    pub fn new(
+        paths: &'static dyn PathAlgorithm,
+        cuts: Option<&'static dyn CutAlgorithm>,
+        availability: Option<&'static dyn AvailabilityAlgorithm>,
+    ) -> Result<Plan, Error> {
+        if cuts.is_none() && availability.is_some_and(|a| a.input() == SetKind::Cuts) {
+            return Err(Error::MissingCutAlgorithm);
+        }
+        Ok(Plan {
+            paths,
+            cuts,
+            availability,
+        })
+    }
+}
+
+/// Outcome for one node pair. Sets are not kept (D29).
+#[derive(Clone, PartialEq, Debug)]
+pub struct PairResult {
+    pub src: NodeId,
+    pub dst: NodeId,
+    /// `None` if the stage was not reached or failed.
+    pub path_count: Option<usize>,
+    pub cut_count: Option<usize>,
+    /// One value per scenario; empty if no availability was computed.
+    pub availability: Vec<f64>,
+    pub error: Option<Error>,
+}
+
+/// Runs paths, then cuts (if chosen), then prepare and evaluate (if chosen) for one pair.
+pub fn run_pair(
+    plan: &Plan,
+    g: &Graph,
+    src: NodeId,
+    dst: NodeId,
+    scenarios: &[ProbabilityMap],
+    ctl: &dyn Control,
+) -> PairResult {
+    let mut result = PairResult {
+        src,
+        dst,
+        path_count: None,
+        cut_count: None,
+        availability: Vec::new(),
+        error: None,
+    };
+    if let Err(err) = run_stages(plan, g, src, dst, scenarios, ctl, &mut result) {
+        result.error = Some(err);
+    }
+    result
+}
+
+/// Runs every pair in order; one pair's error does not affect the others.
+/// After a cancel no new pair is started, so fewer results than pairs may come back.
+/// Serial for now; stage 5 switches to rayon under feature `parallel`.
+pub fn run_all(
+    plan: &Plan,
+    g: &Graph,
+    pairs: &[(NodeId, NodeId)],
+    scenarios: &[ProbabilityMap],
+    ctl: &dyn Control,
+) -> Vec<PairResult> {
+    pairs
+        .iter()
+        .map_while(|&(src, dst)| {
+            ctl.check().ok()?;
+            Some(run_pair(plan, g, src, dst, scenarios, ctl))
+        })
+        .collect()
+}
+
+/// All pairs (i, j) with i < j, in the order (0,1), (0,2), …, (1,2), … of the reference answers.
+pub fn all_pairs(node_count: u32) -> Vec<(NodeId, NodeId)> {
+    (0..node_count)
+        .flat_map(|i| (i + 1..node_count).map(move |j| (i, j)))
+        .collect()
+}
+
+/// Fills `result` stage by stage, so counts from finished stages survive a later error.
+fn run_stages(
+    plan: &Plan,
+    g: &Graph,
+    src: NodeId,
+    dst: NodeId,
+    scenarios: &[ProbabilityMap],
+    ctl: &dyn Control,
+    result: &mut PairResult,
+) -> Result<(), Error> {
+    // A short scenario would make evaluate panic; in the browser that kills the Worker
+    let node_count = g.node_count();
+    if let Some((scenario, p)) = scenarios
+        .iter()
+        .enumerate()
+        .find(|(_, p)| p.node_count() != node_count as usize)
+    {
+        return Err(Error::ScenarioSize {
+            scenario,
+            nodes: p.node_count(),
+            node_count,
+        });
+    }
+
+    let paths = timed(ctl, src, dst, Stage::Paths, || {
+        plan.paths.find(g, src, dst, ctl)
+    })?;
+    result.path_count = Some(paths.sets.len());
+
+    let cuts = match plan.cuts {
+        Some(algo) => {
+            let cuts = timed(ctl, src, dst, Stage::Cuts, || algo.from_paths(&paths, ctl))?;
+            result.cut_count = Some(cuts.sets.len());
+            Some(cuts)
+        }
+        None => None,
+    };
+
+    let Some(algo) = plan.availability else {
+        return Ok(());
+    };
+    let input = match algo.input() {
+        SetKind::Paths => &paths,
+        SetKind::Cuts => cuts.as_ref().expect("Plan::new requires a cut algorithm"),
+    };
+    let prepared = timed(ctl, src, dst, Stage::Prepare, || algo.prepare(input, ctl))?;
+    result.availability = timed(ctl, src, dst, Stage::Evaluate, || {
+        Ok(scenarios.iter().map(|p| prepared.evaluate(p)).collect())
+    })?;
+    Ok(())
+}
+
+/// Runs one stage between Started and Finished; Finished is reported even on error.
+fn timed<T>(
+    ctl: &dyn Control,
+    src: NodeId,
+    dst: NodeId,
+    stage: Stage,
+    run: impl FnOnce() -> Result<T, Error>,
+) -> Result<T, Error> {
+    ctl.on_stage(src, dst, stage, StageEvent::Started);
+    let out = run();
+    ctl.on_stage(src, dst, stage, StageEvent::Finished);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::availability::CutDisjoint;
+    use crate::control::{Cancelled, NoControl};
+    use crate::registry::AlgoInfo;
+    use crate::sets::minimalpaths::Dfs;
+    use crate::types::SetFamily;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static FAKE_INFO: AlgoInfo = AlgoInfo {
+        id: "fake",
+        name: "Fake",
+        summary: "Test double",
+        version: 1,
+        aliases: &[],
+        citation: None,
+    };
+
+    /// Valid only on a chain: every node of the single path is a cut.
+    struct ChainCuts;
+
+    impl CutAlgorithm for ChainCuts {
+        fn info(&self) -> &'static AlgoInfo {
+            &FAKE_INFO
+        }
+        fn from_paths(&self, paths: &SetFamily, _: &dyn Control) -> Result<SetFamily, Error> {
+            Ok(SetFamily {
+                kind: SetKind::Cuts,
+                src: paths.src,
+                dst: paths.dst,
+                sets: paths.sets[0].iter().map(|&v| vec![v]).collect(),
+            })
+        }
+    }
+
+    /// Always fails, like a cut algorithm hitting its set limit.
+    struct FailingCuts;
+
+    impl CutAlgorithm for FailingCuts {
+        fn info(&self) -> &'static AlgoInfo {
+            &FAKE_INFO
+        }
+        fn from_paths(&self, _: &SetFamily, _: &dyn Control) -> Result<SetFamily, Error> {
+            Err(Error::TooManySets { limit: 0 })
+        }
+    }
+
+    /// Records every stage event.
+    #[derive(Default)]
+    struct Recorder(Mutex<Vec<(NodeId, NodeId, Stage, StageEvent)>>);
+
+    impl Control for Recorder {
+        fn on_stage(&self, src: NodeId, dst: NodeId, stage: Stage, event: StageEvent) {
+            self.0.lock().unwrap().push((src, dst, stage, event));
+        }
+    }
+
+    impl Recorder {
+        fn stages(&self) -> Vec<(Stage, StageEvent)> {
+            self.0.lock().unwrap().iter().map(|e| (e.2, e.3)).collect()
+        }
+    }
+
+    /// Cancels once the first pair has finished evaluating.
+    #[derive(Default)]
+    struct CancelAfterFirstPair(AtomicBool);
+
+    impl Control for CancelAfterFirstPair {
+        fn check(&self) -> Result<(), Cancelled> {
+            if self.0.load(Ordering::Relaxed) {
+                Err(Cancelled)
+            } else {
+                Ok(())
+            }
+        }
+        fn on_stage(&self, _: NodeId, _: NodeId, stage: Stage, event: StageEvent) {
+            if (stage, event) == (Stage::Evaluate, StageEvent::Finished) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn chain() -> Graph {
+        Graph::from_edges(3, &[(0, 1), (1, 2)]).unwrap()
+    }
+
+    #[test]
+    fn plan_needs_a_cut_algorithm_when_availability_takes_cuts() {
+        let err = Plan::new(&Dfs, None, Some(&CutDisjoint)).err();
+
+        assert_eq!(err, Some(Error::MissingCutAlgorithm));
+    }
+
+    #[test]
+    fn runs_every_stage_in_order_and_counts_sets() {
+        let plan = Plan::new(&Dfs, Some(&ChainCuts), Some(&CutDisjoint)).unwrap();
+        let scenarios = [
+            ProbabilityMap::uniform(3, 0.5),
+            ProbabilityMap::from_nodes(&[0.9, 0.8, 0.7]),
+        ];
+        let ctl = Recorder::default();
+
+        let result = run_pair(&plan, &chain(), 0, 2, &scenarios, &ctl);
+
+        assert_eq!(result.error, None);
+        assert_eq!((result.src, result.dst), (0, 2));
+        assert_eq!(result.path_count, Some(1));
+        assert_eq!(result.cut_count, Some(3));
+        // A chain is up only when all its nodes are up
+        assert_eq!(result.availability.len(), 2);
+        assert!((result.availability[0] - 0.125).abs() < 1e-15);
+        assert!((result.availability[1] - 0.504).abs() < 1e-15);
+        use {Stage::*, StageEvent::*};
+        assert_eq!(
+            ctl.stages(),
+            [
+                (Paths, Started),
+                (Paths, Finished),
+                (Cuts, Started),
+                (Cuts, Finished),
+                (Prepare, Started),
+                (Prepare, Finished),
+                (Evaluate, Started),
+                (Evaluate, Finished),
+            ]
+        );
+        assert!(ctl.0.lock().unwrap().iter().all(|e| (e.0, e.1) == (0, 2)));
+    }
+
+    #[test]
+    fn failed_stage_keeps_earlier_counts_and_skips_the_rest() {
+        let plan = Plan::new(&Dfs, Some(&FailingCuts), Some(&CutDisjoint)).unwrap();
+        let ctl = Recorder::default();
+
+        let result = run_pair(
+            &plan,
+            &chain(),
+            0,
+            2,
+            &[ProbabilityMap::uniform(3, 0.9)],
+            &ctl,
+        );
+
+        assert_eq!(result.error, Some(Error::TooManySets { limit: 0 }));
+        assert_eq!(result.path_count, Some(1));
+        assert_eq!(result.cut_count, None);
+        assert!(result.availability.is_empty());
+        use {Stage::*, StageEvent::*};
+        assert_eq!(
+            ctl.stages(),
+            [
+                (Paths, Started),
+                (Paths, Finished),
+                (Cuts, Started),
+                (Cuts, Finished)
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_scenario_that_does_not_cover_the_graph_before_any_stage() {
+        let plan = Plan::new(&Dfs, Some(&ChainCuts), Some(&CutDisjoint)).unwrap();
+        let scenarios = [
+            ProbabilityMap::uniform(3, 0.9),
+            ProbabilityMap::uniform(2, 0.9),
+        ];
+        let ctl = Recorder::default();
+
+        let result = run_pair(&plan, &chain(), 0, 2, &scenarios, &ctl);
+
+        assert_eq!(
+            result.error,
+            Some(Error::ScenarioSize {
+                scenario: 1,
+                nodes: 2,
+                node_count: 3
+            })
+        );
+        assert_eq!(result.path_count, None);
+        assert!(ctl.stages().is_empty());
+    }
+
+    #[test]
+    fn all_pairs_follow_reference_order() {
+        assert_eq!(
+            all_pairs(4),
+            [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]
+        );
+        assert!(all_pairs(1).is_empty());
+    }
+
+    #[test]
+    fn bad_pair_fails_alone() {
+        let plan = Plan::new(&Dfs, Some(&ChainCuts), Some(&CutDisjoint)).unwrap();
+        let scenarios = [ProbabilityMap::uniform(3, 0.5)];
+
+        let results = run_all(
+            &plan,
+            &chain(),
+            &[(0, 1), (1, 1), (0, 2)],
+            &scenarios,
+            &NoControl,
+        );
+
+        let summary: Vec<_> = results
+            .iter()
+            .map(|r| (r.src, r.dst, r.path_count, r.error.clone()))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (0, 1, Some(1), None),
+                (1, 1, None, Some(Error::InvalidPair { src: 1, dst: 1 })),
+                (0, 2, Some(1), None),
+            ]
+        );
+        assert_eq!(results[2].availability, [0.125]);
+    }
+
+    #[test]
+    fn stops_starting_new_pairs_once_cancelled() {
+        let plan = Plan::new(&Dfs, Some(&ChainCuts), Some(&CutDisjoint)).unwrap();
+        let scenarios = [ProbabilityMap::uniform(3, 0.5)];
+
+        let results = run_all(
+            &plan,
+            &chain(),
+            &all_pairs(3),
+            &scenarios,
+            &CancelAfterFirstPair::default(),
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!((results[0].src, results[0].dst), (0, 1));
+        assert_eq!(results[0].error, None);
+    }
+}
