@@ -1,0 +1,22 @@
+[package]
+name = "netavail-wasm"
+description = "Browser engine for netavail (wasm-bindgen)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+netavail-core.workspace = true
+netavail-io.workspace = true
+serde.workspace = true
+serde-wasm-bindgen = "0.6.5"
+tsify = { version = "0.5.8", default-features = false, features = ["js"] }
+wasm-bindgen = "0.2.130"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3.80"
