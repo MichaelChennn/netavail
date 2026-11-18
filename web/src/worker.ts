@@ -17,15 +17,15 @@ function handle(req: Request): unknown {
   switch (req.method) {
     case "runPair": {
       const a = req.args as Request<"runPair">["args"];
-      return engine.runPair(a.plan, a.src, a.dst, a.probs);
+      return engine.runPair(a.plan, a.src, a.dst, a.probs, a.linkProb);
     }
     case "reevaluate": {
       const a = req.args as Request<"reevaluate">["args"];
-      return engine.reevaluate(a.plan, a.probs);
+      return engine.reevaluate(a.plan, a.probs, a.linkProb);
     }
     case "sets": {
       const a = req.args as Request<"sets">["args"];
-      return engine.sets(a.plan, a.src, a.dst, a.kind);
+      return engine.sets(a.plan, a.src, a.dst, a.kind, a.links);
     }
   }
 }

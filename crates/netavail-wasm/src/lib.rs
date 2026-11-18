@@ -49,7 +49,8 @@ impl Engine {
         Ok(session::algorithms().into_ts()?)
     }
 
-    /// One pair, every node at availability `p` for each entry of `probs`.
+    /// One pair, every node at availability `p` for each entry of `probs`;
+    /// with `link_prob`, every link can fail too (edge `i` is node `n + i`).
     #[wasm_bindgen(js_name = runPair)]
     pub fn run_pair(
         &mut self,
@@ -57,37 +58,42 @@ impl Engine {
         src: u32,
         dst: u32,
         probs: Vec<f64>,
+        link_prob: Option<f64>,
     ) -> Result<Ts<PairReport>, JsError> {
         let report = self
             .session
-            .run_pair(&plan.to_rust()?, src, dst, &probs)
+            .run_pair(&plan.to_rust()?, src, dst, &probs, link_prob)
             .map_err(err)?;
         Ok(report.into_ts()?)
     }
 
-    /// Re-evaluates every earlier pair whose sets `plan` already has, with new `probs`.
+    /// Re-evaluates every earlier pair whose sets `plan` already has, with new `probs`;
+    /// `link_prob` picks the link graph's pairs, as in `runPair`.
     pub fn reevaluate(
         &mut self,
         plan: Ts<PlanSpec>,
         probs: Vec<f64>,
+        link_prob: Option<f64>,
     ) -> Result<Ts<PairReports>, JsError> {
         let reports = self
             .session
-            .reevaluate(&plan.to_rust()?, &probs)
+            .reevaluate(&plan.to_rust()?, &probs, link_prob)
             .map_err(err)?;
         Ok(reports.into_ts()?)
     }
 
+    /// `links` reads the sets computed with a `link_prob`.
     pub fn sets(
         &self,
         plan: Ts<PlanSpec>,
         src: u32,
         dst: u32,
         kind: Ts<WireSetKind>,
+        links: bool,
     ) -> Result<Ts<Sets>, JsError> {
         let sets = self
             .session
-            .sets(&plan.to_rust()?, src, dst, kind.to_rust()?)
+            .sets(&plan.to_rust()?, src, dst, kind.to_rust()?, links)
             .map_err(err)?;
         Ok(sets.into_ts()?)
     }

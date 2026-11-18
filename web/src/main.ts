@@ -13,6 +13,7 @@ const ui = {
   cuts: $<HTMLSelectElement>("cuts"),
   avail: $<HTMLSelectElement>("avail"),
   probs: $<HTMLInputElement>("probs"),
+  linkProb: $<HTMLInputElement>("link-prob"),
   run: $<HTMLButtonElement>("run"),
   reevaluate: $<HTMLButtonElement>("reevaluate"),
   cancel: $<HTMLButtonElement>("cancel"),
@@ -67,9 +68,14 @@ let topo: TopologyView | null = null;
 let reports: PairReport[] = [];
 let shownPlan: PlanSpec | null = null;
 let shownProbs: number[] = [];
+let shownLinkProb: number | undefined;
 let running = false;
 
-const label = (i: number) => {
+// Nodes n + i of the link graph are edge i, shown as u–v
+const label = (i: number): string => {
+  const n = topo?.nodes.length ?? 0;
+  const edge = i >= n ? topo?.edges[i - n] : undefined;
+  if (edge) return `${label(edge[0])}–${label(edge[1])}`;
   const l = topo?.nodes[i]?.label;
   return l && l !== String(i) ? `${l} (${i})` : String(i);
 };
@@ -93,6 +99,17 @@ function parseProbs(): number[] {
   if (bad !== undefined) throw new Error(`p = ${bad} is not a number in [0, 1]`);
   return probs;
 }
+
+function parseLinkProb(): number | undefined {
+  const text = ui.linkProb.value.trim();
+  if (text === "") return undefined;
+  const q = Number(text);
+  if (!(q >= 0 && q <= 1)) throw new Error(`link availability ${text} is not a number in [0, 1]`);
+  return q;
+}
+
+// Every link becomes a node, so cut sets grow quickly
+const LINK_HINT = "with link failures, cut algorithms can be very slow on medium topologies; path_sdp is much faster";
 
 function setRunning(on: boolean) {
   running = on;
@@ -128,8 +145,10 @@ async function openBuiltIn(file: string) {
 async function runAll() {
   if (!topo) return;
   let probs: number[];
+  let linkProb: number | undefined;
   try {
     probs = parseProbs();
+    linkProb = parseLinkProb();
   } catch (e) {
     return setStatus((e as Error).message, true);
   }
@@ -141,22 +160,24 @@ async function runAll() {
   reports = [];
   shownPlan = spec;
   shownProbs = probs;
+  shownLinkProb = linkProb;
   renderTable();
   hideDetail();
   setRunning(true);
+  const hint = linkProb !== undefined && spec.cuts ? ` (${LINK_HINT})` : "";
   ui.progress.max = pairs.length;
   ui.progress.value = 0;
   const started = performance.now();
   const body = ui.table.tBodies[0];
   try {
     for (const [src, dst] of pairs) {
-      const report = await call("runPair", { plan: spec, src, dst, probs });
+      const report = await call("runPair", { plan: spec, src, dst, probs, linkProb });
       reports.push(report);
       body.append(row(report));
       ui.progress.value = reports.length;
-      setStatus(`${reports.length} / ${pairs.length} pairs`);
+      setStatus(`${reports.length} / ${pairs.length} pairs${hint}`);
     }
-    setStatus(summary(performance.now() - started));
+    setStatus(summary(performance.now() - started) + hint);
   } catch (e) {
     if (e instanceof Cancelled) {
       setStatus(`cancelled after ${reports.length} of ${pairs.length} pairs`);
@@ -173,13 +194,15 @@ async function reevaluate() {
   if (!topo) return;
   try {
     const probs = parseProbs();
+    const linkProb = parseLinkProb();
     const spec = plan();
     const started = performance.now();
-    const out = await call("reevaluate", { plan: spec, probs });
+    const out = await call("reevaluate", { plan: spec, probs, linkProb });
     if (out.reports.length === 0) return setStatus("nothing cached for these algorithms yet; run first");
     reports = out.reports;
     shownPlan = spec;
     shownProbs = probs;
+    shownLinkProb = linkProb;
     renderTable();
     setStatus(`re-evaluated ${reports.length} cached pairs in ${(performance.now() - started).toFixed(1)} ms`);
   } catch (e) {
@@ -195,7 +218,8 @@ function summary(wallMs: number) {
     .filter((k) => reports.some((r) => r.times[k] !== undefined))
     .map((k) => `${k.replace("_ms", "")} ${sum(k).toFixed(1)} ms`)
     .join(", ");
-  return `${reports.length} pairs in ${wallMs.toFixed(0)} ms (${failed} failed). Stage totals: ${stages}.`;
+  const links = shownLinkProb === undefined ? "" : ` Links at ${shownLinkProb}.`;
+  return `${reports.length} pairs in ${wallMs.toFixed(0)} ms (${failed} failed). Stage totals: ${stages}.${links}`;
 }
 
 // ---- Table ----
@@ -234,7 +258,8 @@ function renderTable() {
   const avail = Boolean(shownPlan?.availability);
   const head = ["source", "target", "paths"];
   if (cuts) head.push("cuts");
-  if (avail) head.push(...shownProbs.map((p) => `A(p=${p})`));
+  const q = shownLinkProb === undefined ? "" : `, q=${shownLinkProb}`;
+  if (avail) head.push(...shownProbs.map((p) => `A(p=${p}${q})`));
   head.push("paths ms");
   if (cuts) head.push("cuts ms");
   if (avail) head.push("prepare ms", "evaluate ms");
@@ -264,7 +289,8 @@ async function showSets(src: number, dst: number) {
   const parts: HTMLElement[] = [];
   const kinds = shownPlan.cuts ? (["paths", "cuts"] as const) : (["paths"] as const);
   for (const kind of kinds) {
-    const { sets } = await call("sets", { plan: shownPlan, src, dst, kind });
+    const links = shownLinkProb !== undefined;
+    const { sets } = await call("sets", { plan: shownPlan, src, dst, kind, links });
     const h = document.createElement("h2");
     h.textContent = kind === "paths" ? `Minimal path sets (${sets?.length ?? 0})` : `Minimal cut sets (${sets?.length ?? 0})`;
     const list = document.createElement("ol");

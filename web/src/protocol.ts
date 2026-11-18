@@ -14,12 +14,13 @@ export type Methods = {
   open: { args: { json: string }; result: TopologyView };
   algorithms: { args: Record<string, never>; result: AlgorithmList };
   runPair: {
-    args: { plan: PlanSpec; src: number; dst: number; probs: number[] };
+    // linkProb set: every link can fail too; edge i is node n + i
+    args: { plan: PlanSpec; src: number; dst: number; probs: number[]; linkProb?: number };
     result: PairReport;
   };
-  reevaluate: { args: { plan: PlanSpec; probs: number[] }; result: PairReports };
+  reevaluate: { args: { plan: PlanSpec; probs: number[]; linkProb?: number }; result: PairReports };
   sets: {
-    args: { plan: PlanSpec; src: number; dst: number; kind: SetKind };
+    args: { plan: PlanSpec; src: number; dst: number; kind: SetKind; links: boolean };
     result: Sets;
   };
 };

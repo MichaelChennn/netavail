@@ -26,13 +26,13 @@ fn every_pair_matches_the_reference_paths() {
     for expected in read_sets(PATHS, SetKind::Paths).unwrap() {
         let (src, dst) = (expected.src, expected.dst);
         let report: PairReport = engine
-            .run_pair(plan(), src, dst, vec![])
+            .run_pair(plan(), src, dst, vec![], None)
             .unwrap()
             .to_rust()
             .unwrap();
         let kind = WireSetKind::Paths.into_ts().unwrap();
         let sets: Sets = engine
-            .sets(plan(), src, dst, kind)
+            .sets(plan(), src, dst, kind, false)
             .unwrap()
             .to_rust()
             .unwrap();
