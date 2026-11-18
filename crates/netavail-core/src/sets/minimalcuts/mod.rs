@@ -1,5 +1,10 @@
 //! Minimal cut set algorithms.
 
+mod common;
+mod decision_tree;
+
+pub use decision_tree::DecisionTree;
+
 use crate::control::Control;
 use crate::error::Error;
 use crate::registry::AlgoInfo;

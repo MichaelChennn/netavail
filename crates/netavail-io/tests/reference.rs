@@ -9,7 +9,8 @@ use netavail_core::types::{NodeId, SetFamily, SetKind};
 use netavail_core::{Control, CutAlgorithm, Error, NoControl, Plan, all_pairs, registry, run_all};
 use netavail_io::Topology;
 use netavail_io::reference::{
-    check_availability, check_paths, read_availability, read_sets, scenarios, validate_sets,
+    check_availability, check_cuts, check_paths, read_availability, read_sets, scenarios,
+    validate_sets,
 };
 
 #[test]
@@ -40,6 +41,30 @@ fn path_algorithms_match_reference_pathsets() {
             );
 
             let lines = check_paths(*algo, topo.graph(), &expected);
+            failures.extend(lines.into_iter().map(|l| format!("{name} {l}")));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} mismatches:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// Each cut algorithm gets the reference path sets as input (D34).
+#[test]
+fn cut_algorithms_match_reference_cutsets() {
+    assert!(!registry::cut_algorithms().is_empty());
+    let mut failures = Vec::new();
+    for algo in registry::cut_algorithms() {
+        for (name, _, _) in common::TOPOLOGIES {
+            let csv = common::read(name, &format!("Pathset_{name}.csv"));
+            let paths = read_sets(&csv, SetKind::Paths).unwrap();
+            let csv = common::read(name, &format!("Mincutset_{name}.csv"));
+            let expected = read_sets(&csv, SetKind::Cuts).unwrap();
+
+            let lines = check_cuts(*algo, &paths, &expected);
             failures.extend(lines.into_iter().map(|l| format!("{name} {l}")));
         }
     }

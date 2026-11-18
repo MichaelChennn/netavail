@@ -155,6 +155,18 @@ proptest! {
     }
 
     #[test]
+    fn cut_algorithms_find_exactly_the_minimal_cut_sets(c in case()) {
+        let g = Graph::from_edges(c.n, &c.edges).unwrap();
+        let paths = family(SetKind::Paths, c.src, c.dst, minimal_paths(&g, c.src, c.dst));
+        let expected = family(SetKind::Cuts, c.src, c.dst, minimal_cuts(&g, c.src, c.dst));
+
+        for algo in registry::cut_algorithms() {
+            let actual = algo.from_paths(&paths, &NoControl).unwrap();
+            prop_assert_eq!(&actual.normalize(), &expected.normalize(), "{}", algo.info().id);
+        }
+    }
+
+    #[test]
     fn availability_algorithms_match_exact_availability(c in case()) {
         let g = Graph::from_edges(c.n, &c.edges).unwrap();
         let exact = exact_availability(&g, c.src, c.dst, &c.probs);
@@ -168,6 +180,37 @@ proptest! {
             let input = family(algo.input(), c.src, c.dst, sets);
             let avail = algo.prepare(&input, &NoControl).unwrap().evaluate(&probs);
             prop_assert!((avail - exact).abs() < 1e-12, "{}: {} vs {}", algo.info().id, avail, exact);
+        }
+    }
+}
+
+/// Without any path every cut algorithm returns the empty cut, so availability is 0.
+#[test]
+fn disconnected_pair_has_zero_availability() {
+    let g = Graph::from_edges(4, &[(0, 1), (2, 3)]).unwrap();
+    let probs = ProbabilityMap::from_nodes(&[0.9; 4]);
+
+    for path_algo in registry::path_algorithms() {
+        let paths = path_algo.find(&g, 0, 3, &NoControl).unwrap();
+        for cut_algo in registry::cut_algorithms() {
+            let cuts = cut_algo.from_paths(&paths, &NoControl).unwrap();
+            assert_eq!(
+                cuts.sets,
+                vec![Vec::<NodeId>::new()],
+                "{}",
+                cut_algo.info().id
+            );
+            for avail_algo in registry::availability_algorithms() {
+                let input = match avail_algo.input() {
+                    SetKind::Paths => &paths,
+                    SetKind::Cuts => &cuts,
+                };
+                let avail = avail_algo
+                    .prepare(input, &NoControl)
+                    .unwrap()
+                    .evaluate(&probs);
+                assert_eq!(avail, 0.0, "{}", avail_algo.info().id);
+            }
         }
     }
 }
