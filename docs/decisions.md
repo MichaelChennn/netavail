@@ -340,6 +340,41 @@ core 稳定之前，前端只是一个用来验证的 demo：原生 TS + Vite，
   - 导入参考 CSV 时的合法性检查（D28）。
   - `diff_sets` 同时比较 src、dst 和 kind，这项随 `netavail verify` 一起做。
 
+## D37 阶段 3 实现中定下的细节（已定，2026-11-18）
+
+core：
+- 新增 `Control::max_terms()`，限制 `cut_disjoint` 的项数（已选项加待处理项），超出时报 `TooManyTerms`。没有复用 `max_sets`，因为项数通常比集合数多几个数量级。
+- `Cache` 放在 core 里，本身只是几个 HashMap，不做 IO，由适配层持有。它记住所属图的指纹。这条细化 §3.6 "缓存存在哪里由适配层决定"。
+- `run_pair_cached`：缓存命中的阶段直接跳过，也不发 stage 事件；evaluate 每次都跑；出错的阶段不写入缓存。`run_pair` 内部用一个临时缓存。
+
+io 和 CLI：
+- `StageTimer` 放在 io，包装别的 `Control`，时钟由适配层传入，单位 ms：CLI 用 `Instant`，浏览器用 `performance.now()`。缓存命中的阶段，耗时列为空。
+- 结果 CSV 的列：`source,target,paths,cuts,<p> Availability…,paths_ms,cuts_ms,prepare_ms,evaluate_ms,error`。导出集合时用参考答案的格式，另附 `meta.json`。
+- D36 推迟的两项已完成：`diff_sets` 同时比较 kind、src 和 dst；`validate_sets` 检查导入集合的合法性。
+- CLI 暂不提供 `--threads`，到阶段 5 再加。按 Ctrl-C 后，已完成节点对的结果照样写出。`verify` 遇到缺失的文件打印 skip，有不一致时退出码为 1。
+
+wasm 和前端：
+- `Engine` 的实际接口：`new(topology)`、`load(topology)`、`topology()`、`algorithms()`、`runPair(plan, src, dst, probs)`、`reevaluate(plan, probs)`、`sets(plan, src, dst, kind)`。
+  - `load` 时如果图指纹没变，就保留缓存。
+  - 场景用 `probs: number[]` 表示，每个 p 是一个场景，所有节点取同一个 p。这和 CLI 的 `--p`、参考答案的约定一致。拓扑文件里每个节点自己的 prob 暂时不用。
+  - `reevaluate` 只处理之前跑过、而且 plan 最后一个集合阶段已在缓存里的节点对，所以实际只会运行 evaluate。
+- 浏览器的默认上限：100 000 个集合，2 000 000 个项。取消就是 terminate Worker，缓存也随之丢失。缓存本身不设容量上限，demo 可以接受；正式界面（阶段 5）再加淘汰。
+- 引擎逻辑写在 `session.rs`，可以在本机测试；`lib.rs` 只负责 JS 值和 Rust 类型的转换。tsify 用 `Ts<T>`，不用 `into_wasm_abi`：后者在输入不合法时会泄漏内存，0.5.8 已将其弃用。
+- 前端用 Vite 7 + TypeScript 5.9。Worker 消息是 `{id, method, args}` 形式的 RPC，每个 method 对应一个 `Engine` 方法；`open` 第一次调用时 new 一个 Engine，之后改用 load。
+- 内置 16 个拓扑，跳过两个空文件。`index.json` 标出哪 8 个有参考答案。
+- npm audit 报出的 picomatch ReDoS 只存在于构建工具里，不会进入页面产物，暂不处理。
+- 浏览器时钟的精度大约是 0.1 ms，单对的耗时只能粗略参考。
+
+性能（`tools/cpp_baseline/README.md`）：
+- 在 8 个小拓扑上，Rust 的 `dfs` 比 C++ 快 8 到 30 倍，`cut_disjoint` 快 1.7 到 3 倍；两边的校验和一致。
+- 中等拓扑（Norway 等）上，`cut_disjoint` 这个算法本身就很慢：Norway 的 0-8 一对，C++ 要 29 s，Rust 要 9 s。因此这些拓扑不进常规的 `verify` 和 benchmark。
+
+推迟：
+- 注册表里还没有割集算法，所以 demo 和 `run` 暂时算不出可用度。阶段 4 第一个移植 `decision_tree`，可用度列到时会自动出现。
+- `Topology` 写出 JSON：demo 用不到，继续推迟。
+- Norway、USA_26、Nobel_EU、janos-us-ca 的节点编号核对，和大拓扑的 `#[ignore]` 测试一起在阶段 4 做。
+- `verify` 目前没有项数上限，大拓扑上可能跑很久。阶段 4 视需要加 `--max-terms`。
+
 ---
 
 ## 尚未决定

@@ -3,8 +3,23 @@
 Network availability analysis in Rust: minimal path sets, minimal cut sets, and
 source-to-destination availability for network topologies.
 
-Status: architecture phase, no code yet. See [docs/architecture.md](docs/architecture.md)
-and [docs/decisions.md](docs/decisions.md).
+Status: early. Minimal path sets (`dfs`) and cut-set availability (`cut_disjoint`) are
+ported and checked against reference answers; cut set algorithms come next. See
+[docs/architecture.md](docs/architecture.md) and [docs/decisions.md](docs/decisions.md).
+
+**Demo:** <https://michaelchennn.github.io/netavail/> runs the Rust code as WebAssembly
+in your browser.
+
+## Command line
+
+```sh
+cargo run --release -p netavail-cli -- algorithms
+cargo run --release -p netavail-cli -- run tests/reference/Germany_17/topology.json --out results.csv
+cargo run --release -p netavail-cli -- verify tests/reference/Germany_17/topology.json tests/reference/Germany_17
+```
+
+`run` writes one row per node pair with the time of each stage; `--sets-dir DIR` also
+exports the sets. Speed compared with the original C++: [tools/cpp_baseline](tools/cpp_baseline/README.md).
 
 ## Origin
 

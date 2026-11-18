@@ -185,6 +185,11 @@ impl Plan {
 pub fn run_pair(plan: &Plan, g: &Graph, src: NodeId, dst: NodeId,
                 scenarios: &[ProbabilityMap], ctl: &dyn Control) -> PairResult;
 
+// Same, reusing and filling a cache that belongs to g (D37)
+pub fn run_pair_cached(plan: &Plan, g: &Graph, src: NodeId, dst: NodeId,
+                       scenarios: &[ProbabilityMap], ctl: &dyn Control,
+                       cache: &mut Cache) -> PairResult;
+
 pub fn run_all(plan: &Plan, g: &Graph, pairs: &[(NodeId, NodeId)],
                scenarios: &[ProbabilityMap], ctl: &dyn Control) -> Vec<PairResult>;
 ```
@@ -200,7 +205,8 @@ pub fn run_all(plan: &Plan, g: &Graph, pairs: &[(NodeId, NodeId)],
 pub trait Control: Sync {
     fn check(&self) -> Result<(), Cancelled> { Ok(()) }                    // 取消
     fn on_stage(&self, src: NodeId, dst: NodeId, stage: Stage, event: StageEvent) {} // 计时
-    fn max_sets(&self) -> Option<usize> { None }                           // 上限
+    fn max_sets(&self) -> Option<usize> { None }                           // 集合数上限
+    fn max_terms(&self) -> Option<usize> { None }                          // 不相交项上限（D37）
 }
 ```
 
@@ -256,10 +262,12 @@ netavail-wasm::Engine ─► netavail-io ─► netavail-core
 | 方法 | 作用 |
 |---|---|
 | `new(topology)` | 解析并校验拓扑 |
+| `load(topology)` | 换拓扑；图指纹没变就保留缓存 |
+| `topology()` | 节点（含 label、坐标）、边、图指纹 |
 | `algorithms()` | 读注册表 |
-| `run_pair(plan, src, dst, scenarios)` | 计算一对，结果写入缓存，返回 `PairReport`（`PairResult` + 各阶段耗时） |
-| `reevaluate(scenarios)` | 只对已缓存的 `Prepared` 重新 evaluate |
-| `sets(src, dst, kind)` | 从缓存取集合 |
+| `runPair(plan, src, dst, probs)` | 计算一对，结果写入缓存，返回 `PairReport`（`PairResult` + 各阶段耗时）；每个 p 是一个场景 |
+| `reevaluate(plan, probs)` | 对已缓存的节点对只重新 evaluate |
+| `sets(plan, src, dst, kind)` | 从缓存取集合 |
 
 - Plan 里写算法 id 字符串，由 Rust 在注册表里查找。Worker 消息和 `Engine` 的方法一一对应。
 - 用 serde + tsify 根据 Rust 结构体生成 TS 类型，只维护一份类型定义。
@@ -319,7 +327,7 @@ graph LR
 ci.yml（push / PR）
 ├─ Linux、macOS、Windows：cargo fmt --check、cargo clippy -D warnings、cargo test
 ├─ Linux：cargo test --features parallel
-└─ Linux：cargo check --target wasm32-unknown-unknown + wasm 冒烟测试（阶段 3 才加）
+└─ Linux：wasm32 目标的 clippy + wasm 冒烟测试（wasm-pack test --node）
 
 pages.yml（push 到 main）
 └─ 构建 demo → GitHub Pages
@@ -332,7 +340,7 @@ pages.yml（push 到 main）
 | 0 | 仓库、架构文档、决策记录 | 本文档确认 ✅ |
 | 1 | workspace 骨架、`rust-toolchain.toml`、CI、`types.rs` / `prob.rs`（含 `Lit` 排序测试）、核对编号后导入小拓扑参考答案 | CI 全绿 |
 | 2 | `Graph`、拓扑读取、注册表、流水线；移植 `dfs` 和 `cut_disjoint`；参考答案对拍 + 暴力验证 | 小拓扑全部对上 |
-| 3 | `netavail-wasm` + demo 页面 + 部署到 Pages；`netavail-cli`；criterion 性能对比 | 线上 demo 结果与参考答案一致；速度不慢于 C++ |
+| 3 | `netavail-wasm` + demo 页面 + 部署到 Pages；`netavail-cli`；criterion 性能对比 | 线上 demo 结果与参考答案一致；速度不慢于 C++ ✅ |
 | 4 | 其余割集算法、`path_disjoint`、`path_sdp`、链路故障（`to_link_graph`） | 全部参考答案对上 |
 | 5 | 正式界面设计、多 Worker 并行 | 待定 |
 | 以后 | `netavail-py`、桌面版 | 待定 |
