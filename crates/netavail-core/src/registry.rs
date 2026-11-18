@@ -3,7 +3,9 @@
 //! Adding an algorithm = one new file implementing its trait + one line here.
 
 use crate::availability::{AvailabilityAlgorithm, CutDisjoint};
-use crate::sets::minimalcuts::{Combination, CutAlgorithm, DecisionTree, PathProduct, Shannon};
+use crate::sets::minimalcuts::{
+    Combination, CombinationBits, CutAlgorithm, DecisionTree, PathProduct, Shannon,
+};
 use crate::sets::minimalpaths::{Dfs, PathAlgorithm};
 
 /// Static description of an algorithm.
@@ -36,7 +38,13 @@ impl AlgoInfo {
 }
 
 static PATHS: &[&dyn PathAlgorithm] = &[&Dfs];
-static CUTS: &[&dyn CutAlgorithm] = &[&DecisionTree, &Shannon, &PathProduct, &Combination];
+static CUTS: &[&dyn CutAlgorithm] = &[
+    &DecisionTree,
+    &Shannon,
+    &PathProduct,
+    &Combination,
+    &CombinationBits,
+];
 static AVAILABILITY: &[&dyn AvailabilityAlgorithm] = &[&CutDisjoint];
 
 pub fn path_algorithms() -> &'static [&'static dyn PathAlgorithm] {

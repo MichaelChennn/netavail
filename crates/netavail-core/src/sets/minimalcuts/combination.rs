@@ -13,7 +13,9 @@ use crate::control::Control;
 use crate::error::Error;
 use crate::registry::{AlgoInfo, Citation};
 use crate::sets::minimalcuts::CutAlgorithm;
-use crate::sets::minimalcuts::common::{CutInput, check_size, prepare_paths, with_endpoints};
+use crate::sets::minimalcuts::common::{
+    CutInput, check_size, next_combination, prepare_paths, with_endpoints,
+};
 use crate::types::{NodeId, NodeSet, SetFamily};
 
 pub struct Combination;
@@ -105,15 +107,8 @@ fn combination_cuts(clauses: &[NodeSet], ctl: &dyn Control) -> Result<Vec<NodeSe
             }
 
             // Next combination
-            let Some(i) = (0..combo_size)
-                .rev()
-                .find(|&i| indices[i] != firstpairs.len() - combo_size + i)
-            else {
+            if !next_combination(&mut indices, firstpairs.len()) {
                 break;
-            };
-            indices[i] += 1;
-            for j in i + 1..combo_size {
-                indices[j] = indices[j - 1] + 1;
             }
         }
 

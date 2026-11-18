@@ -67,6 +67,20 @@ pub(crate) fn multiply_pathsets(
     Ok(result)
 }
 
+/// Steps `indices` (a sorted k-combination of `0..n`) to the next one in lexicographic
+/// order; returns false after the last.
+pub(crate) fn next_combination(indices: &mut [usize], n: usize) -> bool {
+    let k = indices.len();
+    let Some(i) = (0..k).rev().find(|&i| indices[i] != n - k + i) else {
+        return false;
+    };
+    indices[i] += 1;
+    for j in i + 1..k {
+        indices[j] = indices[j - 1] + 1;
+    }
+    true
+}
+
 /// Fails with `TooManySets` once `len` exceeds the limit set by the caller.
 pub(crate) fn check_size(len: usize, ctl: &dyn Control) -> Result<(), Error> {
     match ctl.max_sets() {
@@ -171,6 +185,18 @@ mod tests {
         product.sort();
 
         assert_eq!(product, vec![vec![1, 3], vec![2]]);
+    }
+
+    #[test]
+    fn next_combination_walks_all_combinations_in_order() {
+        let mut indices = vec![0, 1];
+        let mut seen = vec![indices.clone()];
+        while next_combination(&mut indices, 4) {
+            seen.push(indices.clone());
+        }
+
+        let expected = [[0, 1], [0, 2], [0, 3], [1, 2], [1, 3], [2, 3]];
+        assert_eq!(seen, expected);
     }
 
     #[test]
