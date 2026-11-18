@@ -342,7 +342,7 @@ pages.yml（push 到 main）
 | 2 | `Graph`、拓扑读取、注册表、流水线；移植 `dfs` 和 `cut_disjoint`；参考答案对拍 + 暴力验证 | 小拓扑全部对上 |
 | 3 | `netavail-wasm` + demo 页面 + 部署到 Pages；`netavail-cli`；criterion 性能对比 | 线上 demo 结果与参考答案一致；速度不慢于 C++ ✅ |
 | 4 | 其余割集算法、`path_disjoint`、`path_sdp`、链路故障（`to_link_graph`） | 全部参考答案对上 |
-| 5 | 正式界面设计、多 Worker 并行 | 待定 |
+| 5 | 5a core `run_all` 接 rayon + CLI `--threads`；5b 浏览器 Worker 池（动态分配节点对、按 Worker 路由重算、缓存 LRU 上限、取消只停正在算的 Worker）；5c 正式界面原型；5d 按原型实现正式界面 | 并行结果与串行一致，报告 Austria_24、Sweden 全部节点对的加速比；N 个 Worker 与 1 个结果一致，取消后空闲 Worker 缓存保留；正式界面按确认的原型实现，线上 8 个小拓扑与参考答案一致，CI 和 Pages 全绿 |
 | 以后 | `netavail-py`、桌面版 | 待定 |
 
 ## 10. 待定问题
