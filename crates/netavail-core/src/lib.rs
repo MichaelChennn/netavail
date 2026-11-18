@@ -12,6 +12,7 @@ pub mod pipeline;
 pub mod prob;
 pub mod registry;
 pub mod sets;
+pub mod transform;
 pub mod types;
 
 pub use availability::{AvailabilityAlgorithm, Prepared};

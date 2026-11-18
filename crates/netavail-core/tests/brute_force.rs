@@ -1,6 +1,7 @@
 //! Brute force on random small graphs (D34 layer 3): enumerates all 2^n node
 //! states, so it does not depend on the old code.
 
+use netavail_core::transform::to_link_graph;
 use netavail_core::types::{NodeId, NodeSet, SetFamily, SetKind};
 use netavail_core::{Graph, NoControl, ProbabilityMap, registry};
 use proptest::prelude::*;
@@ -73,6 +74,26 @@ fn exact_availability(g: &Graph, src: NodeId, dst: NodeId, probs: &[f64]) -> f64
         .sum()
 }
 
+/// Like `exact_availability`, but every edge can fail too (`edge_probs[i]` for edge i).
+fn exact_availability_with_links(c: &Case, edge_probs: &[f64]) -> f64 {
+    let (n, m) = (c.n, c.edges.len() as u32);
+    let state_prob = |up: Mask, probs: &[f64]| {
+        let p = |(i, &p): (usize, &f64)| if has(up, i as u32) { p } else { 1.0 - p };
+        probs.iter().enumerate().map(p).product::<f64>()
+    };
+    let mut total = 0.0;
+    for links_up in 0..1u32 << m {
+        let up_edges: Vec<_> = (0..m)
+            .filter(|&i| has(links_up, i))
+            .map(|i| c.edges[i as usize])
+            .collect();
+        let g = Graph::from_edges(n, &up_edges).unwrap();
+        let nodes = exact_availability(&g, c.src, c.dst, &c.probs);
+        total += state_prob(links_up, edge_probs) * nodes;
+    }
+    total
+}
+
 fn family(kind: SetKind, src: NodeId, dst: NodeId, sets: Vec<NodeSet>) -> SetFamily {
     SetFamily {
         kind,
@@ -100,7 +121,7 @@ fn brute_force_matches_hand_count_on_chorded_square() {
     );
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Case {
     n: u32,
     edges: Vec<(NodeId, NodeId)>,
@@ -112,7 +133,11 @@ struct Case {
 /// A connected graph (random spanning tree plus random extra edges, shuffled),
 /// one random node pair and a random availability per node.
 fn case() -> impl Strategy<Value = Case> {
-    (2u32..=12, 0.0..0.6f64).prop_flat_map(|(n, density)| {
+    case_up_to(12)
+}
+
+fn case_up_to(max_n: u32) -> impl Strategy<Value = Case> {
+    (2u32..=max_n, 0.0..0.6f64).prop_flat_map(|(n, density)| {
         let parents: Vec<_> = (1..n).map(|v| 0..v).collect();
         let pairs = (n * (n - 1) / 2) as usize;
         (
@@ -210,6 +235,39 @@ fn disconnected_pair_has_zero_availability() {
                     .unwrap()
                     .evaluate(&probs);
                 assert_eq!(avail, 0.0, "{}", avail_algo.info().id);
+            }
+        }
+    }
+}
+
+/// Up to 5 nodes and 10 edges, so at most 2^15 node and link states.
+fn link_case() -> impl Strategy<Value = (Case, Vec<f64>)> {
+    case_up_to(5).prop_flat_map(|c| {
+        let m = c.edges.len();
+        (Just(c), prop::collection::vec(0.5..1.0f64, m))
+    })
+}
+
+proptest! {
+    #[test]
+    fn link_graph_matches_exact_availability_with_link_failures((c, edge_probs) in link_case()) {
+        let exact = exact_availability_with_links(&c, &edge_probs);
+        let g = to_link_graph(c.n, &c.edges).unwrap();
+        let probs = ProbabilityMap::from_nodes(&[c.probs.clone(), edge_probs].concat());
+
+        for path_algo in registry::path_algorithms() {
+            let paths = path_algo.find(&g, c.src, c.dst, &NoControl).unwrap();
+            for cut_algo in registry::cut_algorithms() {
+                let cuts = cut_algo.from_paths(&paths, &NoControl).unwrap();
+                for avail_algo in registry::availability_algorithms() {
+                    let input = match avail_algo.input() {
+                        SetKind::Paths => &paths,
+                        SetKind::Cuts => &cuts,
+                    };
+                    let avail = avail_algo.prepare(input, &NoControl).unwrap().evaluate(&probs);
+                    let ids = format!("{}+{}", cut_algo.info().id, avail_algo.info().id);
+                    prop_assert!((avail - exact).abs() < 1e-12, "{}: {} vs {}", ids, avail, exact);
+                }
             }
         }
     }
