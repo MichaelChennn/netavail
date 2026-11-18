@@ -125,6 +125,8 @@ fn run_with_link_prob_lets_links_fail() {
 
     let bad = netavail(&["run", topo, "--link-prob", "1.5"]);
     assert!(!bad.status.success());
+    let export = netavail(&["run", topo, "--link-prob", "0.8", "--sets-dir", "x"]);
+    assert!(!export.status.success());
 }
 
 /// Links that never fail give the same availabilities as no link failures.

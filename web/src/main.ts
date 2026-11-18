@@ -109,7 +109,7 @@ function parseLinkProb(): number | undefined {
 }
 
 // Every link becomes a node, so cut sets grow quickly
-const LINK_HINT = "with link failures, cut algorithms can be very slow on medium topologies; path_sdp is much faster";
+const LINK_HINT = "with link failures, cut algorithms can be very slow on medium topologies; path_sdp with Cuts set to none is much faster";
 
 function setRunning(on: boolean) {
   running = on;

@@ -127,10 +127,9 @@ fn eliminate_sdp_set(mut sdp_sets: SdpSets) -> SdpSets {
             eliminated_elements.sort_unstable();
             eliminated_set.push(sdp);
         } else {
+            // An empty factor is "not all of nothing up", so it keeps the product at 0
             let new_set = difference(&sdp.set, &eliminated_elements);
-            if !new_set.is_empty() {
-                eliminated_set.push(Sdp::complementary(new_set));
-            }
+            eliminated_set.push(Sdp::complementary(new_set));
         }
     }
     eliminated_set
@@ -244,10 +243,14 @@ fn to_sdp_set(path_sets: Vec<NodeSet>, ctl: &dyn Control) -> Result<Vec<SdpSets>
         ctl.check()?;
         let mut result_sdps = vec![Sdp::normal(current_set.clone())];
         for preceding_set in &sorted_path_set[..i] {
-            let rc = difference(preceding_set, current_set);
-            if !rc.is_empty() {
-                result_sdps.push(Sdp::complementary(rc));
-            }
+            result_sdps.push(Sdp::complementary(difference(preceding_set, current_set)));
+        }
+        // A preceding path inside this one: the product is impossible (non-minimal input)
+        if result_sdps
+            .iter()
+            .any(|sdp| sdp.complementary && sdp.set.is_empty())
+        {
+            continue;
         }
 
         let result_sdps = absorb_sdp_set(result_sdps);
@@ -323,6 +326,17 @@ mod tests {
 
         let expected = p[0] * p[5] * (1.0 - (1.0 - p[1] * p[3]) * (1.0 - p[2] * p[4]));
         assert!((got - expected).abs() < 1e-12, "{got} vs {expected}");
+    }
+
+    /// A duplicate and a non-minimal path add nothing.
+    #[test]
+    fn ignores_duplicate_and_non_minimal_paths() {
+        let family = paths(0, 2, vec![vec![0, 2], vec![0, 1, 2], vec![0, 2]]);
+        let p = [0.9, 0.8, 0.7];
+
+        let got = avail(&family, &p);
+
+        assert!((got - p[0] * p[2]).abs() < 1e-12, "{got}");
     }
 
     /// Paths 0-1-4-6, 0-2-4-6, 0-3-5-6: the last path's complements {1, 4} and {2, 4}

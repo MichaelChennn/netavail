@@ -95,7 +95,7 @@ fn combination_matrix_cuts(clauses: &[NodeSet], ctl: &dyn Control) -> Result<Vec
     let mut twos: Bits = vec![0; words];
     for combo_size in 2..=max_order {
         ctl.check()?;
-        let upperset = upper_sets(&minimal, &firstpairs, combo_size);
+        let upperset = upper_sets(&minimal, &firstpairs, combo_size, ctl)?;
 
         // find the new pairs by removing the upper sets from all combinations
         let mut newpairs = Vec::new();
@@ -134,11 +134,13 @@ fn combination_matrix_cuts(clauses: &[NodeSet], ctl: &dyn Control) -> Result<Vec
 }
 
 /// All combinations of `combo_size` first pairs that contain a known minimal cut set.
+/// Can be large, so it counts against the set limit.
 fn upper_sets(
     minimal: &[Vec<usize>],
     firstpairs: &[usize],
     combo_size: usize,
-) -> HashSet<Vec<usize>> {
+    ctl: &dyn Control,
+) -> Result<HashSet<Vec<usize>>, Error> {
     let mut upperset = HashSet::new();
     // finding all the upper sets of the current minimal cut sets
     for tup in minimal {
@@ -160,16 +162,18 @@ fn upper_sets(
         // add the current minimal cut set and each combination of remainder nodes
         let mut indices: Vec<usize> = (0..need).collect();
         loop {
+            ctl.check()?;
             let mut combo: Vec<usize> = indices.iter().map(|&i| remainder[i]).collect();
             combo.extend_from_slice(tup);
             combo.sort_unstable();
             upperset.insert(combo);
+            check_size(upperset.len(), ctl)?;
             if !next_combination(&mut indices, remainder.len()) {
                 break;
             }
         }
     }
-    upperset
+    Ok(upperset)
 }
 
 /// `ones` gets the paths hit by any column of `combo`, `twos` those hit by at least two.
@@ -258,7 +262,7 @@ mod tests {
     /// The size-3 upper sets of the cut {1, 2} among the first pairs 1..=4.
     #[test]
     fn skips_upper_sets_of_known_cuts() {
-        let upper = upper_sets(&[vec![1, 2]], &[1, 2, 3, 4], 3);
+        let upper = upper_sets(&[vec![1, 2]], &[1, 2, 3, 4], 3, &NoControl).unwrap();
 
         assert_eq!(upper, HashSet::from([vec![1, 2, 3], vec![1, 2, 4]]));
     }

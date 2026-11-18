@@ -50,7 +50,8 @@ enum Command {
         #[arg(long, value_delimiter = ',', default_value = "0.9,0.99,0.999,0.9999")]
         p: Vec<f64>,
         /// Link availability, the same for every link; links never fail if omitted.
-        #[arg(long)]
+        /// Sets of the link graph cannot be exported yet, so this excludes --sets-dir.
+        #[arg(long, conflicts_with = "sets_dir")]
         link_prob: Option<f64>,
         /// Result CSV; standard output if omitted.
         #[arg(long)]
