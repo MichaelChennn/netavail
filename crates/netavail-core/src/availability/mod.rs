@@ -3,9 +3,11 @@
 mod cut_disjoint;
 mod disjoint;
 mod path_disjoint;
+mod path_sdp;
 
 pub use cut_disjoint::CutDisjoint;
 pub use path_disjoint::PathDisjoint;
+pub use path_sdp::PathSdp;
 
 use crate::control::Control;
 use crate::error::Error;
