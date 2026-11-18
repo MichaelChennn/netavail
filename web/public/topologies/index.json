@@ -1,0 +1,114 @@
+[
+  {
+    "file": "Abilene.json",
+    "name": "Abilene",
+    "nodes": 11,
+    "edges": 14,
+    "reference": true
+  },
+  {
+    "file": "Austria_24.json",
+    "name": "Austria_24",
+    "nodes": 24,
+    "edges": 50,
+    "reference": true
+  },
+  {
+    "file": "dfn-bwin.json",
+    "name": "dfn-bwin",
+    "nodes": 10,
+    "edges": 45,
+    "reference": true
+  },
+  {
+    "file": "Germany_17.json",
+    "name": "Germany_17",
+    "nodes": 17,
+    "edges": 26,
+    "reference": true
+  },
+  {
+    "file": "Germany_50.json",
+    "name": "Germany_50",
+    "nodes": 50,
+    "edges": 88,
+    "reference": false
+  },
+  {
+    "file": "HiberniaUk.json",
+    "name": "HiberniaUk",
+    "nodes": 13,
+    "edges": 13,
+    "reference": true
+  },
+  {
+    "file": "india35.json",
+    "name": "india35",
+    "nodes": 35,
+    "edges": 80,
+    "reference": false
+  },
+  {
+    "file": "janos-us-ca.json",
+    "name": "janos-us-ca",
+    "nodes": 39,
+    "edges": 61,
+    "reference": false
+  },
+  {
+    "file": "Nobel_EU.json",
+    "name": "Nobel_EU",
+    "nodes": 28,
+    "edges": 41,
+    "reference": false
+  },
+  {
+    "file": "Norway.json",
+    "name": "Norway",
+    "nodes": 27,
+    "edges": 51,
+    "reference": false
+  },
+  {
+    "file": "pioro40.json",
+    "name": "pioro40",
+    "nodes": 40,
+    "edges": 89,
+    "reference": false
+  },
+  {
+    "file": "polska.json",
+    "name": "polska",
+    "nodes": 12,
+    "edges": 18,
+    "reference": true
+  },
+  {
+    "file": "Spain.json",
+    "name": "Spain",
+    "nodes": 17,
+    "edges": 28,
+    "reference": true
+  },
+  {
+    "file": "Sweden.json",
+    "name": "Sweden",
+    "nodes": 25,
+    "edges": 29,
+    "reference": true
+  },
+  {
+    "file": "USA_26.json",
+    "name": "USA_26",
+    "nodes": 26,
+    "edges": 42,
+    "reference": false
+  },
+  {
+    "file": "zib54.json",
+    "name": "zib54",
+    "nodes": 54,
+    "edges": 80,
+    "reference": false
+  }
+]
