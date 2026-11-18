@@ -1,6 +1,7 @@
 //! Availability algorithms.
 
 mod cut_disjoint;
+mod disjoint;
 
 pub use cut_disjoint::CutDisjoint;
 

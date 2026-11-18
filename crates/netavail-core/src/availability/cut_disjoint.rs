@@ -2,14 +2,15 @@
 //!
 //! Converts minimal cut sets to probability sets: removes {src} and {dst},
 //! inverts signs (every node of a cut is down), then iteratively applies
-//! [`make_disjoint`]. The resulting sets are mutually exclusive, so
+//! `make_disjoint`. The resulting sets are mutually exclusive, so
 //! availability = P(src) * P(dst) * (1 - sum(product_of_terms_per_set)).
 
+use crate::availability::disjoint::disjoint_terms;
 use crate::availability::{AvailabilityAlgorithm, Prepared};
 use crate::control::Control;
 use crate::error::Error;
 use crate::prob::ProbabilityMap;
-use crate::registry::AlgoInfo;
+use crate::registry::{AlgoInfo, Citation};
 use crate::types::{Lit, NodeId, SetFamily, SetKind, Term};
 
 pub struct CutDisjoint;
@@ -20,7 +21,11 @@ static INFO: AlgoInfo = AlgoInfo {
     summary: "Make minimal cut sets disjoint, sum unavailability",
     version: 1,
     aliases: &["mcs"],
-    citation: None,
+    citation: Some(Citation {
+        text: "S. Janardhanan, Y. Chen, C. Mas-Machuca, \"PyRBD++: An Open-Source Fast \
+               Reliability Block Diagram Evaluation Tool\", RNDM, 2025",
+        url: None,
+    }),
 };
 
 impl AvailabilityAlgorithm for CutDisjoint {
@@ -40,60 +45,20 @@ impl AvailabilityAlgorithm for CutDisjoint {
             });
         }
         // Remove {src} and {dst}, then invert the minimal cut sets
-        let mut pending: Vec<Term> = cuts
+        let pending: Vec<Term> = cuts
             .sets
             .iter()
             .filter(|set| **set != [cuts.src] && **set != [cuts.dst])
             .map(|set| set.iter().map(|&node| Lit::down(node)).collect())
             .collect();
 
-        // Keep the first set, make every remaining set disjoint from it, repeat
-        let mut terms = Vec::with_capacity(pending.len() * 3);
-        while !pending.is_empty() {
-            ctl.check()?;
-            let mut rest = std::mem::take(&mut pending).into_iter();
-            let selected = rest.next().unwrap();
-            pending = rest.flat_map(|set| make_disjoint(&selected, set)).collect();
-            terms.push(selected);
-            // Terms can grow exponentially; the browser sets a limit so memory stays bounded
-            if let Some(limit) = ctl.max_terms()
-                && terms.len() + pending.len() > limit
-            {
-                return Err(Error::TooManyTerms { limit });
-            }
-        }
+        let terms = disjoint_terms(pending, ctl)?;
         Ok(Box::new(ProbaSets {
             src: cuts.src,
             dst: cuts.dst,
             terms,
         }))
     }
-}
-
-/// Creates sets disjoint from `set1` that together cover `set2 \ set1`:
-/// 1. RC = set1 \ set2
-/// 2. Progressively append -RC[i] to set2 producing disjoint products.
-fn make_disjoint(set1: &[Lit], mut set2: Term) -> Vec<Term> {
-    // RC set: elements in set1 but not in set2
-    let mut rc = Vec::new();
-    for &lit in set1 {
-        // Already disjoint: x in set1 and -x in set2
-        if set2.contains(&lit.negate()) {
-            return vec![set2];
-        }
-        if !set2.contains(&lit) {
-            rc.push(lit);
-        }
-    }
-
-    // Empty RC means set1 is a subset of set2: set2 is absorbed
-    let mut result = Vec::with_capacity(rc.len());
-    for lit in rc {
-        set2.push(lit.negate());
-        result.push(set2.clone());
-        *set2.last_mut().unwrap() = lit;
-    }
-    result
 }
 
 /// Mutually exclusive terms whose probabilities sum to the unavailability
