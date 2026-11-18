@@ -64,7 +64,6 @@ button.primary { background: var(--accent); color: var(--accent-fg); border-colo
 button:disabled { opacity: 0.5; cursor: default; }
 progress { width: 100%; }
 .muted { color: var(--muted); }
-.note { margin: 0; font-size: 13px; }
 .error { color: var(--error); }
 .results { display: grid; grid-template-columns: 1fr; gap: 16px; min-width: 0; }
 .results.with-detail { grid-template-columns: 1fr 320px; }

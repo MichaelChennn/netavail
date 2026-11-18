@@ -285,6 +285,8 @@ function fillSelect(select: HTMLSelectElement, algos: AlgorithmInfo[], none?: st
   const options = algos.map((a) => new Option(`${a.name} (${a.id})`, a.id));
   if (none !== undefined) options.unshift(new Option(none, ""));
   select.replaceChildren(...options);
+  // Default to the first algorithm, so Run computes the whole pipeline
+  if (algos.length > 0) select.value = algos[0].id;
   select.title = algos.map((a) => `${a.id}: ${a.summary}`).join("\n");
 }
 
@@ -294,11 +296,6 @@ async function main() {
   fillSelect(ui.paths, algorithms.filter((a) => a.kind === "paths"));
   fillSelect(ui.cuts, algorithms.filter((a) => a.kind === "cuts"), "none");
   fillSelect(ui.avail, algorithms.filter((a) => a.kind === "availability"), "none");
-  if (!algorithms.some((a) => a.kind === "cuts")) {
-    ui.cuts.disabled = true;
-    ui.avail.disabled = true;
-    $("algo-note").hidden = false;
-  }
 
   const res = await fetch(`${import.meta.env.BASE_URL}topologies/index.json`);
   const entries: Entry[] = await res.json();
