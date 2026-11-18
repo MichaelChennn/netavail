@@ -377,6 +377,48 @@ wasm 和前端：
 
 ---
 
+## D38 阶段 4 实现中定下的细节（已定，2026-11-18）
+
+割集算法（decision_tree、shannon、path_product、combination、combination_bits）：
+- 不连通的节点对得到空割集，可用度为 0。C++ 返回 {src}、{dst}。所有割集算法共用同一个节点对检查。
+- decision_tree 在一次递归里求值整棵树，子树用完立即释放。clause 相乘（`common::multiply_pathsets`）由 decision_tree 和 shannon 共用。
+- combination / combination_bits 去掉了 C++ 默认的 `ceil(n/2)` 阶数上限。反例是星形图：0 和 5 经 1..4 相连，唯一的内部割是 {1,2,3,4}，阶数超过上限。用户已确认 `ceil(n/2)` 不是理论上界，不再讨论。
+  - 候选节点只取至少在一条路上出现的节点。
+  - "自有路"剪枝：割里每个节点都需要有一条只经过它自己的路。当前阶数的组合都长不成最小割时，搜索提前停止。
+  - combination_bits 跳过 1 阶割的超集。C++ 里的 DEBUG 输出已去掉。超集表可能很大，所以生成时也检查取消，表的大小计入 `max_sets`。
+  - 效果（全部节点对）：Austria_24 上 C++ 约枚举 8.5 亿个组合、用时 224 s，Rust 约 19 万个、16.9 ms；Sweden 上是 20 亿对 195 万。
+  - 中等拓扑上仍按组合数指数增长：Norway 取 10 对，combination 37 s，combination_bits 19 s；janos-us-ca 几分钟也跑不完。其余三种割集算法都在几秒内完成。
+
+可用度算法：
+- path_disjoint：路上的节点（包括 src 和 dst）都作为 up 项，不相交的项直接求和。不相交化的循环和 cut_disjoint 共用（`availability/disjoint.rs`）。
+- path_sdp：排序改用稳定排序，key 相同的路保持字典序（C++ 的 `std::sort` 不保证顺序）。目前只有串行版。
+- path_sdp 遇到重复的路或不是最小的路时，对应的乘积按 0 处理：前面某条路被当前路包含，或者某个补因子被消空，就不计这项。C++ 在这两种情况下会把补因子丢掉，结果偏大。路径算法给出的都是最小路集，所以只有导入的集合会遇到这种情况。
+
+链路故障（D18 的落地）：
+- core 的 `to_link_graph` 把第 i 条边变成节点 n+i，概率向量依次是 n 个节点值和每条边一个值。所有算法不需要知道链路。proptest 用节点和边的精确枚举对拍。
+- io：边的 `prob` 必须在 [0,1] 之间；新增 `Topology::link_graph()`。`link_probabilities()` 没有加：CLI 和网页都只用一个统一的链路可用度，暂时不需要逐边的值。
+- CLI：`run --link-prob <q>` 给所有链路同一个可用度；不给就当链路不会故障，也不做变换。节点对只遍历原始节点，链路节点不会作为 src 或 dst 出现。暂时不能和 `--sets-dir` 同时用：导出的集合里有链路节点，`verify` 只认原图。
+- wasm：`Session` 分别为原图和链路图各保留一份缓存（两个 `Layer`），切换链路开关不会清掉对方的缓存。`runPair` 和 `reevaluate` 多一个可选的 `link_prob`；`sets` 多一个 `links` 标志。
+- 网页：新增"链路可用度"输入框，留空表示链路不会故障；割集里的链路节点显示为 `u–v`。开启链路并选了割集算法时，页面提示改用 path_sdp 并把 Cuts 设为 none，但不禁用这些算法。
+- 链路图会让割集方法明显变慢。Germany_17 加上链路后有 43 个节点，0→1 的路从 3 条变成 67 条。全部节点对：path_sdp 0.47 s；path_disjoint 超过 100 s；decision_tree 17.6 s，combination_bits 超过 30 s。中等拓扑上 combination 系列更慢。
+
+测试：
+- `crates/netavail-io/tests/medium.rs`：4 个 `#[ignore]` 测试，读取 `NETAVAIL_REFERENCE_DIR`，覆盖 Norway、USA_26、Nobel_EU、janos-us-ca。拓扑用 `web/public/topologies/` 里的 JSON，节点编号已核对，和参考 CSV 一致。
+  - 集合合法性、路径算法、path_sdp 可用度：全部节点对。
+  - 割集算法：每个拓扑均匀取 10 对；combination 系列跳过 Norway 和 janos-us-ca。
+  - cut_disjoint 太慢，不进这组测试。整组 release 下约 11 s。
+
+推迟：
+- `verify --max-terms`：中等拓扑已由上面的测试覆盖，暂时用不到。
+- AbsorbList 在 criterion 下的优化；path_sdp 的并行版（对应 C++ `toSDPSetParallel`，路数 ≥ 200 时才划算）。
+- 割集方法在链路图上的性能。
+- code review 提出、暂不处理的几项：
+  - wasm 的链路图 `Layer` 改为第一次用到时才建。
+  - path_sdp 排序里用二分代替 `contains`；`prepare` 不再整份克隆路集。
+  - 边的 `prob` 现在会被检查，但还没有用到。不合法的值也会让拓扑加载失败，和节点的检查保持一致。
+
+---
+
 ## 尚未决定
 
 1. Python API 完全照搬，还是借机整理（做 Python 绑定时再定）。
