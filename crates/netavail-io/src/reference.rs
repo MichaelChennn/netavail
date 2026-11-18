@@ -1,10 +1,13 @@
 //! Old reference answers (Pathset / Mincutset / Availability CSV) and comparison against them (D34).
 //!
-//! Shared by `cargo test` and, later, `netavail verify`.
+//! Shared by `cargo test` and `netavail verify`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use netavail_core::types::{NodeId, NodeSet, SetFamily, SetKind};
+use netavail_core::{
+    AvailabilityAlgorithm, CutAlgorithm, Graph, NoControl, PathAlgorithm, ProbabilityMap,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -15,6 +18,12 @@ pub enum Error {
         line: usize,
         expected: usize,
         found: usize,
+    },
+    #[error("pair ({src}, {dst}): {reason}")]
+    InvalidSet {
+        src: NodeId,
+        dst: NodeId,
+        reason: String,
     },
 }
 
@@ -144,26 +153,193 @@ fn read_availability_row(row: &str, columns: usize) -> Result<AvailabilityRow, S
     })
 }
 
-/// Sets present in only one of two families, compared after normalizing (D3).
+/// What identifies a family: (kind, src, dst).
+pub type FamilyHeader = (SetKind, NodeId, NodeId);
+
+/// How two families differ: a different (kind, src, dst), or sets present in only one
+/// of them after normalizing (D3).
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct SetDiff {
+    /// (expected, actual) when kind, src or dst differ.
+    pub header: Option<(FamilyHeader, FamilyHeader)>,
     pub missing: Vec<NodeSet>,
     pub extra: Vec<NodeSet>,
 }
 
 impl SetDiff {
     pub fn is_empty(&self) -> bool {
-        self.missing.is_empty() && self.extra.is_empty()
+        self.header.is_none() && self.missing.is_empty() && self.extra.is_empty()
     }
 }
 
 /// Compares as multisets, so a set produced twice shows up in `extra`.
 pub fn diff_sets(expected: &SetFamily, actual: &SetFamily) -> SetDiff {
+    let head = |f: &SetFamily| -> FamilyHeader { (f.kind, f.src, f.dst) };
+    let header = (head(expected) != head(actual)).then(|| (head(expected), head(actual)));
     let (expected, actual) = (expected.normalize().sets, actual.normalize().sets);
     SetDiff {
+        header,
         missing: minus(&expected, &actual),
         extra: minus(&actual, &expected),
     }
+}
+
+/// Checks reference sets against the graph, since old CSVs carry no fingerprint (D28):
+/// every path walks along edges from src to dst; every cut separates src from dst.
+pub fn validate_sets(g: &Graph, families: &[SetFamily]) -> Result<(), Error> {
+    for f in families {
+        let fail = |reason: String| Error::InvalidSet {
+            src: f.src,
+            dst: f.dst,
+            reason,
+        };
+        let n = g.node_count();
+        if f.src >= n || f.dst >= n || f.src == f.dst {
+            return Err(fail(format!("not a valid pair in a graph of {n} nodes")));
+        }
+        for set in &f.sets {
+            if let Some(&v) = set.iter().find(|&&v| v >= n) {
+                return Err(fail(format!("{set:?}: node {v} is out of range")));
+            }
+            let ok = match f.kind {
+                SetKind::Paths => is_path(g, f.src, f.dst, set),
+                SetKind::Cuts => separates(g, f.src, f.dst, set),
+            };
+            if !ok {
+                let what = match f.kind {
+                    SetKind::Paths => "is not a path",
+                    SetKind::Cuts => "does not separate the pair",
+                };
+                return Err(fail(format!("{set:?} {what}")));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_path(g: &Graph, src: NodeId, dst: NodeId, set: &[NodeId]) -> bool {
+    set.first() == Some(&src)
+        && set.last() == Some(&dst)
+        && set.windows(2).all(|w| g.neighbors(w[0]).contains(&w[1]))
+}
+
+/// Breadth-first search from src that may not enter a cut node.
+fn separates(g: &Graph, src: NodeId, dst: NodeId, cut: &[NodeId]) -> bool {
+    let mut seen = vec![false; g.node_count() as usize];
+    for &v in cut {
+        seen[v as usize] = true;
+    }
+    if seen[src as usize] || seen[dst as usize] {
+        return true;
+    }
+    seen[src as usize] = true;
+    let mut queue = VecDeque::from([src]);
+    while let Some(u) = queue.pop_front() {
+        for &v in g.neighbors(u) {
+            if v == dst {
+                return false;
+            }
+            if !seen[v as usize] {
+                seen[v as usize] = true;
+                queue.push_back(v);
+            }
+        }
+    }
+    true
+}
+
+/// One scenario per column of the table: every node at the column's p (D9).
+pub fn scenarios(table: &AvailabilityTable, node_count: u32) -> Vec<ProbabilityMap> {
+    table
+        .probs
+        .iter()
+        .map(|&p| ProbabilityMap::uniform(node_count as usize, p))
+        .collect()
+}
+
+/// Runs a path algorithm on every pair of `expected`; returns one line per mismatching pair.
+pub fn check_paths(algo: &dyn PathAlgorithm, g: &Graph, expected: &[SetFamily]) -> Vec<String> {
+    let id = algo.info().id;
+    expected
+        .iter()
+        .filter_map(|exp| {
+            let line = match algo.find(g, exp.src, exp.dst, &NoControl) {
+                Ok(actual) => {
+                    let diff = diff_sets(exp, &actual);
+                    (!diff.is_empty()).then(|| format!("{diff:?}"))
+                }
+                Err(e) => Some(e.to_string()),
+            };
+            line.map(|l| format!("{id} {}->{}: {l}", exp.src, exp.dst))
+        })
+        .collect()
+}
+
+/// Runs a cut algorithm on the reference paths of each pair and compares with the reference cuts.
+pub fn check_cuts(
+    algo: &dyn CutAlgorithm,
+    paths: &[SetFamily],
+    expected: &[SetFamily],
+) -> Vec<String> {
+    let id = algo.info().id;
+    paths
+        .iter()
+        .zip(expected)
+        .filter_map(|(paths, exp)| {
+            let line = match algo.from_paths(paths, &NoControl) {
+                Ok(actual) => {
+                    let diff = diff_sets(exp, &actual);
+                    (!diff.is_empty()).then(|| format!("{diff:?}"))
+                }
+                Err(e) => Some(e.to_string()),
+            };
+            line.map(|l| format!("{id} {}->{}: {l}", exp.src, exp.dst))
+        })
+        .collect()
+}
+
+/// Prepares each reference family (of the algorithm's input kind) and compares every
+/// scenario with the table, within 1e-9 (D3).
+pub fn check_availability(
+    algo: &dyn AvailabilityAlgorithm,
+    families: &[SetFamily],
+    table: &AvailabilityTable,
+    node_count: u32,
+) -> Vec<String> {
+    let id = algo.info().id;
+    let scenarios = scenarios(table, node_count);
+    let mut failures = Vec::new();
+    if families.len() != table.rows.len() {
+        failures.push(format!(
+            "{id}: {} set families but {} availability rows",
+            families.len(),
+            table.rows.len()
+        ));
+    }
+    for (family, row) in families.iter().zip(&table.rows) {
+        let pair = format!("{id} {}->{}", row.src, row.dst);
+        if (family.src, family.dst) != (row.src, row.dst) {
+            failures.push(format!(
+                "{pair}: sets are for {}->{}",
+                family.src, family.dst
+            ));
+            continue;
+        }
+        let prepared = match algo.prepare(family, &NoControl) {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                failures.push(format!("{pair}: {e}"));
+                continue;
+            }
+        };
+        for ((p, scenario), &expected) in table.probs.iter().zip(&scenarios).zip(&row.values) {
+            let actual = prepared.evaluate(scenario);
+            if (actual - expected).abs() > 1e-9 {
+                failures.push(format!("{pair} p={p}: {actual} vs {expected}"));
+            }
+        }
+    }
+    failures
 }
 
 /// Multiset difference `a - b`, keeping the order of `a`.
@@ -304,10 +480,69 @@ mod tests {
         assert_eq!(
             diff,
             SetDiff {
+                header: None,
                 missing: vec![vec![0, 1, 3]],
                 extra: vec![vec![0, 3], vec![0, 3, 4]],
             }
         );
         assert!(diff_sets(&expected, &expected.normalize()).is_empty());
+    }
+
+    #[test]
+    fn diff_reports_other_pair_or_kind() {
+        let expected = paths(0, 3, vec![vec![0, 3]]);
+        let mut other_pair = expected.clone();
+        other_pair.dst = 4;
+        let mut other_kind = expected.clone();
+        other_kind.kind = SetKind::Cuts;
+
+        let pair_diff = diff_sets(&expected, &other_pair);
+        let kind_diff = diff_sets(&expected, &other_kind);
+
+        assert_eq!(
+            pair_diff.header,
+            Some(((SetKind::Paths, 0, 3), (SetKind::Paths, 0, 4)))
+        );
+        assert!(!kind_diff.is_empty());
+    }
+
+    /// 0 - 1 - 3 and 0 - 2 - 3
+    fn diamond() -> Graph {
+        Graph::from_edges(4, &[(0, 1), (1, 3), (0, 2), (2, 3)]).unwrap()
+    }
+
+    fn cuts(src: NodeId, dst: NodeId, sets: Vec<NodeSet>) -> SetFamily {
+        SetFamily {
+            kind: SetKind::Cuts,
+            ..paths(src, dst, sets)
+        }
+    }
+
+    #[test]
+    fn valid_paths_and_cuts_pass() {
+        let ok = [
+            paths(0, 3, vec![vec![0, 1, 3], vec![0, 2, 3]]),
+            cuts(0, 3, vec![vec![0], vec![3], vec![1, 2]]),
+        ];
+
+        assert!(validate_sets(&diamond(), &ok).is_ok());
+    }
+
+    #[test]
+    fn rejects_broken_paths_and_leaky_cuts() {
+        for bad in [
+            paths(0, 3, vec![vec![0, 3]]),
+            paths(0, 3, vec![vec![1, 3]]),
+            paths(0, 3, vec![vec![0, 1, 9]]),
+            cuts(0, 3, vec![vec![1]]),
+            cuts(0, 0, vec![vec![1]]),
+        ] {
+            let err = validate_sets(&diamond(), std::slice::from_ref(&bad));
+
+            assert!(
+                matches!(err, Err(Error::InvalidSet { .. })),
+                "{bad:?} passed"
+            );
+        }
     }
 }

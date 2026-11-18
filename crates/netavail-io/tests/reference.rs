@@ -6,17 +6,29 @@ use std::collections::HashMap;
 
 use netavail_core::registry::AlgoInfo;
 use netavail_core::types::{NodeId, SetFamily, SetKind};
-use netavail_core::{
-    Control, CutAlgorithm, Error, NoControl, Plan, ProbabilityMap, all_pairs, registry, run_all,
-};
+use netavail_core::{Control, CutAlgorithm, Error, NoControl, Plan, all_pairs, registry, run_all};
 use netavail_io::Topology;
-use netavail_io::reference::{diff_sets, read_availability, read_sets};
+use netavail_io::reference::{
+    check_availability, check_paths, read_availability, read_sets, scenarios, validate_sets,
+};
+
+#[test]
+fn reference_sets_are_valid_for_their_topology() {
+    for (name, _, _) in common::TOPOLOGIES {
+        let topo = Topology::from_json(&common::read(name, "topology.json")).unwrap();
+        for (prefix, kind) in [("Pathset", SetKind::Paths), ("Mincutset", SetKind::Cuts)] {
+            let csv = common::read(name, &format!("{prefix}_{name}.csv"));
+            let families = read_sets(&csv, kind).unwrap();
+
+            validate_sets(topo.graph(), &families).unwrap_or_else(|e| panic!("{name}: {e}"));
+        }
+    }
+}
 
 #[test]
 fn path_algorithms_match_reference_pathsets() {
     let mut failures = Vec::new();
     for algo in registry::path_algorithms() {
-        let id = algo.info().id;
         for (name, nodes, _) in common::TOPOLOGIES {
             let topo = Topology::from_json(&common::read(name, "topology.json")).unwrap();
             let csv = common::read(name, &format!("Pathset_{name}.csv"));
@@ -27,15 +39,8 @@ fn path_algorithms_match_reference_pathsets() {
                 "{name}: one row per pair"
             );
 
-            for exp in &expected {
-                let actual = algo
-                    .find(topo.graph(), exp.src, exp.dst, &NoControl)
-                    .unwrap();
-                let diff = diff_sets(exp, &actual);
-                if !diff.is_empty() {
-                    failures.push(format!("{id} {name} {}->{}: {diff:?}", exp.src, exp.dst));
-                }
-            }
+            let lines = check_paths(*algo, topo.graph(), &expected);
+            failures.extend(lines.into_iter().map(|l| format!("{name} {l}")));
         }
     }
     assert!(
@@ -51,39 +56,19 @@ fn path_algorithms_match_reference_pathsets() {
 fn availability_algorithms_match_reference_availability() {
     let mut failures = Vec::new();
     for algo in registry::availability_algorithms() {
-        let id = algo.info().id;
-        let (prefix, kind) = match algo.input() {
-            SetKind::Paths => ("Pathset", SetKind::Paths),
-            SetKind::Cuts => ("Mincutset", SetKind::Cuts),
+        let prefix = match algo.input() {
+            SetKind::Paths => "Pathset",
+            SetKind::Cuts => "Mincutset",
         };
         for (name, nodes, _) in common::TOPOLOGIES {
             let csv = common::read(name, &format!("{prefix}_{name}.csv"));
-            let families = read_sets(&csv, kind).unwrap();
+            let families = read_sets(&csv, algo.input()).unwrap();
             let csv = common::read(name, &format!("Availability_{name}.csv"));
             let table = read_availability(&csv).unwrap();
             assert_eq!(table.probs, [0.9, 0.99, 0.999, 0.9999], "{name}");
-            assert_eq!(table.rows.len(), families.len(), "{name}: row count");
-            let scenarios: Vec<ProbabilityMap> = table
-                .probs
-                .iter()
-                .map(|&p| ProbabilityMap::uniform(nodes as usize, p))
-                .collect();
 
-            for (family, row) in families.iter().zip(&table.rows) {
-                assert_eq!((family.src, family.dst), (row.src, row.dst), "{name}");
-                let prepared = algo.prepare(family, &NoControl).unwrap();
-                for ((p, scenario), &expected) in
-                    table.probs.iter().zip(&scenarios).zip(&row.values)
-                {
-                    let actual = prepared.evaluate(scenario);
-                    if (actual - expected).abs() > 1e-9 {
-                        failures.push(format!(
-                            "{id} {name} {}->{} p={p}: {actual} vs {expected}",
-                            row.src, row.dst
-                        ));
-                    }
-                }
-            }
+            let lines = check_availability(*algo, &families, &table, nodes);
+            failures.extend(lines.into_iter().map(|l| format!("{name} {l}")));
         }
     }
     assert!(
@@ -130,11 +115,7 @@ fn pipeline_matches_reference_on_all_pairs() {
         let cuts = read_sets(&csv, SetKind::Cuts).unwrap();
         let table =
             read_availability(&common::read(name, &format!("Availability_{name}.csv"))).unwrap();
-        let scenarios: Vec<ProbabilityMap> = table
-            .probs
-            .iter()
-            .map(|&p| ProbabilityMap::uniform(nodes as usize, p))
-            .collect();
+        let scenarios = scenarios(&table, nodes);
         // Plan takes &'static; leaking one small map per topology is fine in a test
         let cut_algo: &'static ReferenceCuts = Box::leak(Box::new(ReferenceCuts(
             cuts.iter().map(|f| ((f.src, f.dst), f.clone())).collect(),
