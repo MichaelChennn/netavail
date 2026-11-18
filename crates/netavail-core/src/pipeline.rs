@@ -116,9 +116,8 @@ pub fn run_pair_cached(
     result
 }
 
-/// Runs every pair in order; one pair's error does not affect the others.
-/// After a cancel no new pair is started, so fewer results than pairs may come back.
-/// Serial for now; stage 5 switches to rayon under feature `parallel`.
+/// Runs every pair; one pair's error does not affect the others.
+/// See [`map_pairs`] for order, threads and cancelling.
 pub fn run_all(
     plan: &Plan,
     g: &Graph,
@@ -126,13 +125,31 @@ pub fn run_all(
     scenarios: &[ProbabilityMap],
     ctl: &dyn Control,
 ) -> Vec<PairResult> {
-    pairs
-        .iter()
-        .map_while(|&(src, dst)| {
-            ctl.check().ok()?;
-            Some(run_pair(plan, g, src, dst, scenarios, ctl))
-        })
-        .collect()
+    map_pairs(pairs, ctl, |src, dst| {
+        run_pair(plan, g, src, dst, scenarios, ctl)
+    })
+}
+
+/// Calls `f` for every pair and returns the outputs in pair order.
+/// Under feature `parallel` the pairs run on rayon's current thread pool.
+/// After a cancel no new pair is started; pairs never started are left out,
+/// so in parallel the missing pairs need not be at the end.
+pub fn map_pairs<T: Send>(
+    pairs: &[(NodeId, NodeId)],
+    ctl: &dyn Control,
+    f: impl Fn(NodeId, NodeId) -> T + Sync,
+) -> Vec<T> {
+    let run = |&(src, dst): &(NodeId, NodeId)| ctl.check().ok().map(|()| f(src, dst));
+    #[cfg(feature = "parallel")]
+    {
+        use rayon::prelude::*;
+        let outputs: Vec<Option<T>> = pairs.par_iter().map(run).collect();
+        outputs.into_iter().flatten().collect()
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        pairs.iter().map_while(run).collect()
+    }
 }
 
 /// All pairs (i, j) with i < j, in the order (0,1), (0,2), …, (1,2), … of the reference answers.
@@ -247,6 +264,7 @@ mod tests {
     use crate::sets::minimalpaths::Dfs;
     use crate::types::SetFamily;
     use std::sync::Mutex;
+    #[cfg(not(feature = "parallel"))]
     use std::sync::atomic::{AtomicBool, Ordering};
 
     static FAKE_INFO: AlgoInfo = AlgoInfo {
@@ -304,9 +322,11 @@ mod tests {
     }
 
     /// Cancels once the first pair has finished evaluating.
+    #[cfg(not(feature = "parallel"))]
     #[derive(Default)]
     struct CancelAfterFirstPair(AtomicBool);
 
+    #[cfg(not(feature = "parallel"))]
     impl Control for CancelAfterFirstPair {
         fn check(&self) -> Result<(), Cancelled> {
             if self.0.load(Ordering::Relaxed) {
@@ -459,6 +479,64 @@ mod tests {
         assert_eq!(results[2].availability, [0.125]);
     }
 
+    /// 3x3 grid: 36 pairs, several paths and cuts each.
+    fn grid() -> Graph {
+        let edges: Vec<_> = (0..9u32)
+            .flat_map(|v| {
+                let right = (v % 3 < 2).then_some((v, v + 1));
+                let down = (v < 6).then_some((v, v + 3));
+                right.into_iter().chain(down)
+            })
+            .collect();
+        Graph::from_edges(9, &edges).unwrap()
+    }
+
+    #[test]
+    fn run_all_matches_pair_by_pair_in_order() {
+        let g = grid();
+        let plan = Plan::new(
+            &Dfs,
+            Some(crate::registry::find_cut("decision_tree").unwrap()),
+            Some(&CutDisjoint),
+        )
+        .unwrap();
+        let scenarios = [
+            ProbabilityMap::uniform(9, 0.9),
+            ProbabilityMap::uniform(9, 0.99),
+        ];
+        let mut pairs = all_pairs(9);
+        pairs.push((4, 4)); // an error stays in its place
+
+        let results = run_all(&plan, &g, &pairs, &scenarios, &NoControl);
+
+        let expected: Vec<_> = pairs
+            .iter()
+            .map(|&(s, d)| run_pair(&plan, &g, s, d, &scenarios, &NoControl))
+            .collect();
+        assert_eq!(results, expected);
+    }
+
+    /// Cancelled from the start.
+    struct AlwaysCancelled;
+
+    impl Control for AlwaysCancelled {
+        fn check(&self) -> Result<(), Cancelled> {
+            Err(Cancelled)
+        }
+    }
+
+    #[test]
+    fn runs_nothing_once_cancelled() {
+        let plan = Plan::new(&Dfs, Some(&ChainCuts), Some(&CutDisjoint)).unwrap();
+        let scenarios = [ProbabilityMap::uniform(3, 0.5)];
+
+        let results = run_all(&plan, &chain(), &all_pairs(3), &scenarios, &AlwaysCancelled);
+
+        assert!(results.is_empty());
+    }
+
+    // In parallel, other pairs may already have started when the first one finishes
+    #[cfg(not(feature = "parallel"))]
     #[test]
     fn stops_starting_new_pairs_once_cancelled() {
         let plan = Plan::new(&Dfs, Some(&ChainCuts), Some(&CutDisjoint)).unwrap();

@@ -7,12 +7,13 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-# Multi-threading (filled in at stage 5). CI already builds and tests with it on.
-parallel = []
+# Runs node pairs on rayon's thread pool; off for wasm, which has no threads (D17)
+parallel = ["dep:rayon"]
 
 [dependencies]
 blake3.workspace = true
 thiserror.workspace = true
+rayon = { version = "1.11", optional = true }
 
 [dev-dependencies]
 proptest.workspace = true

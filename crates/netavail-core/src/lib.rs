@@ -20,7 +20,7 @@ pub use cache::Cache;
 pub use control::{Control, NoControl};
 pub use error::Error;
 pub use graph::Graph;
-pub use pipeline::{PairResult, Plan, all_pairs, run_all, run_pair, run_pair_cached};
+pub use pipeline::{PairResult, Plan, all_pairs, map_pairs, run_all, run_pair, run_pair_cached};
 pub use prob::ProbabilityMap;
 pub use registry::AlgoInfo;
 pub use sets::minimalcuts::CutAlgorithm;
