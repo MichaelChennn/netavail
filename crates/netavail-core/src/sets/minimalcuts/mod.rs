@@ -2,8 +2,10 @@
 
 mod common;
 mod decision_tree;
+mod shannon;
 
 pub use decision_tree::DecisionTree;
+pub use shannon::Shannon;
 
 use crate::control::Control;
 use crate::error::Error;

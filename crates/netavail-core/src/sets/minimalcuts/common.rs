@@ -45,6 +45,28 @@ pub(crate) fn multiply_two_pathsets(
     absorbed.into_sets()
 }
 
+/// Multiplies out the AND of all OR-clauses into its minimal transversals.
+/// An empty clause (or no clause) gives no sets.
+pub(crate) fn multiply_pathsets(
+    pathsets: &[NodeSet],
+    ctl: &dyn Control,
+) -> Result<Vec<NodeSet>, Error> {
+    let Some((first, rest)) = pathsets.split_first() else {
+        return Ok(Vec::new());
+    };
+
+    // Initialize with singleton sets from first path
+    let mut result: Vec<NodeSet> = first.iter().map(|&e| vec![e]).collect();
+
+    // Multiply with each subsequent set
+    for clause in rest {
+        ctl.check()?;
+        result = multiply_two_pathsets(&result, clause);
+        check_size(result.len(), ctl)?;
+    }
+    Ok(result)
+}
+
 /// Fails with `TooManySets` once `len` exceeds the limit set by the caller.
 pub(crate) fn check_size(len: usize, ctl: &dyn Control) -> Result<(), Error> {
     match ctl.max_sets() {

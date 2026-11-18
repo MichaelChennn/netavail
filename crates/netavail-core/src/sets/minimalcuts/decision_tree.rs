@@ -14,7 +14,7 @@ use crate::registry::{AlgoInfo, Citation};
 use crate::sets::absorb::AbsorbList;
 use crate::sets::minimalcuts::CutAlgorithm;
 use crate::sets::minimalcuts::common::{
-    CutInput, check_size, most_common_element, multiply_two_pathsets, prepare_paths, with_endpoints,
+    CutInput, check_size, most_common_element, multiply_pathsets, prepare_paths, with_endpoints,
 };
 use crate::types::{NodeId, NodeSet, SetFamily};
 
@@ -99,19 +99,12 @@ fn evaluate_self(
     most_common_value: Option<NodeId>,
     ctl: &dyn Control,
 ) -> Result<Vec<NodeSet>, Error> {
-    let Some((first, rest)) = value.split_first() else {
+    if value.is_empty() {
         return Ok(Vec::new());
-    };
-
-    // Start with singletons from first clause
-    let mut final_eval: Vec<NodeSet> = first.iter().map(|&e| vec![e]).collect();
-
-    // Multiply with remaining clauses
-    for clause in rest {
-        ctl.check()?;
-        final_eval = multiply_two_pathsets(&final_eval, clause);
-        check_size(final_eval.len(), ctl)?;
     }
+
+    // Start with singletons from first clause, multiply with remaining clauses
+    let mut final_eval = multiply_pathsets(value, ctl)?;
 
     if let Some(mcv) = most_common_value {
         final_eval.push(vec![mcv]);
