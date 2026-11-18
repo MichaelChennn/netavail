@@ -80,6 +80,9 @@ impl Graph {
 pub struct Fingerprint([u8; 32]);
 
 impl Fingerprint {
+    /// Stands in for a real fingerprint in a throwaway cache.
+    pub(crate) const PLACEHOLDER: Fingerprint = Fingerprint([0; 32]);
+
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }

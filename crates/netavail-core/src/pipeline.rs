@@ -1,13 +1,15 @@
 //! Runs the chosen algorithms for node pairs (architecture.md §3.4; D29).
 
 use crate::availability::AvailabilityAlgorithm;
+use crate::cache::{AlgoKey, Cache, CutKey, PairKeys, PathKey, PrepareKey, SetKey};
 use crate::control::{Control, Stage, StageEvent};
 use crate::error::Error;
-use crate::graph::Graph;
+use crate::graph::{Fingerprint, Graph};
 use crate::prob::ProbabilityMap;
 use crate::sets::minimalcuts::CutAlgorithm;
 use crate::sets::minimalpaths::PathAlgorithm;
-use crate::types::{NodeId, SetKind};
+use crate::types::{NodeId, SetFamily, SetKind};
+use std::collections::hash_map::Entry;
 
 /// A checked combination of algorithms; build it with [`Plan::new`].
 pub struct Plan {
@@ -30,6 +32,32 @@ impl Plan {
             cuts,
             availability,
         })
+    }
+
+    /// Cache keys of every stage this plan runs for one pair of the graph `graph`.
+    pub fn keys(&self, graph: &Fingerprint, src: NodeId, dst: NodeId) -> PairKeys {
+        let paths = PathKey {
+            graph: *graph,
+            src,
+            dst,
+            algo: AlgoKey::from(self.paths.info()),
+        };
+        let cuts = self.cuts.map(|algo| CutKey {
+            paths,
+            algo: AlgoKey::from(algo.info()),
+        });
+        let prepare = self.availability.map(|algo| PrepareKey {
+            sets: match algo.input() {
+                SetKind::Paths => SetKey::Paths(paths),
+                SetKind::Cuts => SetKey::Cuts(cuts.expect("Plan::new requires a cut algorithm")),
+            },
+            algo: AlgoKey::from(algo.info()),
+        });
+        PairKeys {
+            paths,
+            cuts,
+            prepare,
+        }
     }
 }
 
@@ -55,6 +83,25 @@ pub fn run_pair(
     scenarios: &[ProbabilityMap],
     ctl: &dyn Control,
 ) -> PairResult {
+    let mut cache = Cache::for_fingerprint(Fingerprint::PLACEHOLDER);
+    run_pair_cached(plan, g, src, dst, scenarios, ctl, &mut cache)
+}
+
+/// Like [`run_pair`], but reuses and fills `cache`, which must belong to `g`.
+/// A stage found in the cache is skipped and reports no stage events; evaluate always runs.
+pub fn run_pair_cached(
+    plan: &Plan,
+    g: &Graph,
+    src: NodeId,
+    dst: NodeId,
+    scenarios: &[ProbabilityMap],
+    ctl: &dyn Control,
+    cache: &mut Cache,
+) -> PairResult {
+    debug_assert!(
+        cache.graph == Fingerprint::PLACEHOLDER || cache.graph == g.fingerprint(),
+        "cache belongs to another graph"
+    );
     let mut result = PairResult {
         src,
         dst,
@@ -63,7 +110,7 @@ pub fn run_pair(
         availability: Vec::new(),
         error: None,
     };
-    if let Err(err) = run_stages(plan, g, src, dst, scenarios, ctl, &mut result) {
+    if let Err(err) = run_stages(plan, g, src, dst, scenarios, ctl, cache, &mut result) {
         result.error = Some(err);
     }
     result
@@ -96,6 +143,7 @@ pub fn all_pairs(node_count: u32) -> Vec<(NodeId, NodeId)> {
 }
 
 /// Fills `result` stage by stage, so counts from finished stages survive a later error.
+#[allow(clippy::too_many_arguments)] // private; the public entry points stay within the limit
 fn run_stages(
     plan: &Plan,
     g: &Graph,
@@ -103,6 +151,7 @@ fn run_stages(
     dst: NodeId,
     scenarios: &[ProbabilityMap],
     ctl: &dyn Control,
+    cache: &mut Cache,
     result: &mut PairResult,
 ) -> Result<(), Error> {
     // A short scenario would make evaluate panic; in the browser that kills the Worker
@@ -119,30 +168,54 @@ fn run_stages(
             node_count,
         });
     }
+    let keys = plan.keys(&cache.graph, src, dst);
+    // Separate fields, so one can be borrowed while another is filled
+    let Cache {
+        paths: path_cache,
+        cuts: cut_cache,
+        prepared: prepared_cache,
+        ..
+    } = cache;
 
-    let paths = with_stage_events(ctl, src, dst, Stage::Paths, || {
-        plan.paths.find(g, src, dst, ctl)
-    })?;
+    let paths: &SetFamily = match path_cache.entry(keys.paths) {
+        Entry::Occupied(hit) => hit.into_mut(),
+        Entry::Vacant(miss) => miss.insert(with_stage_events(ctl, src, dst, Stage::Paths, || {
+            plan.paths.find(g, src, dst, ctl)
+        })?),
+    };
     result.path_count = Some(paths.sets.len());
 
-    let cuts = match plan.cuts {
-        Some(algo) => {
-            let cuts =
-                with_stage_events(ctl, src, dst, Stage::Cuts, || algo.from_paths(&paths, ctl))?;
+    let cuts = match (plan.cuts, keys.cuts) {
+        (Some(algo), Some(key)) => {
+            let cuts: &SetFamily = match cut_cache.entry(key) {
+                Entry::Occupied(hit) => hit.into_mut(),
+                Entry::Vacant(miss) => {
+                    miss.insert(with_stage_events(ctl, src, dst, Stage::Cuts, || {
+                        algo.from_paths(paths, ctl)
+                    })?)
+                }
+            };
             result.cut_count = Some(cuts.sets.len());
             Some(cuts)
         }
-        None => None,
+        _ => None,
     };
 
-    let Some(algo) = plan.availability else {
+    let (Some(algo), Some(key)) = (plan.availability, keys.prepare) else {
         return Ok(());
     };
-    let input = match algo.input() {
-        SetKind::Paths => &paths,
-        SetKind::Cuts => cuts.as_ref().expect("Plan::new requires a cut algorithm"),
+    let prepared = match prepared_cache.entry(key) {
+        Entry::Occupied(hit) => hit.into_mut(),
+        Entry::Vacant(miss) => {
+            let input = match algo.input() {
+                SetKind::Paths => paths,
+                SetKind::Cuts => cuts.expect("Plan::new requires a cut algorithm"),
+            };
+            miss.insert(with_stage_events(ctl, src, dst, Stage::Prepare, || {
+                algo.prepare(input, ctl)
+            })?)
+        }
     };
-    let prepared = with_stage_events(ctl, src, dst, Stage::Prepare, || algo.prepare(input, ctl))?;
     result.availability = with_stage_events(ctl, src, dst, Stage::Evaluate, || {
         Ok(scenarios.iter().map(|p| prepared.evaluate(p)).collect())
     })?;
@@ -400,6 +473,164 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!((results[0].src, results[0].dst), (0, 1));
         assert_eq!(results[0].error, None);
+    }
+
+    static FAKE_V2_INFO: AlgoInfo = AlgoInfo {
+        id: "fake",
+        name: "Fake",
+        summary: "Test double, bumped version",
+        version: 2,
+        aliases: &[],
+        citation: None,
+    };
+
+    /// Same cuts as [`ChainCuts`], but a newer version of the algorithm.
+    struct ChainCutsV2;
+
+    impl CutAlgorithm for ChainCutsV2 {
+        fn info(&self) -> &'static AlgoInfo {
+            &FAKE_V2_INFO
+        }
+        fn from_paths(&self, paths: &SetFamily, ctl: &dyn Control) -> Result<SetFamily, Error> {
+            ChainCuts.from_paths(paths, ctl)
+        }
+    }
+
+    static OTHER_AVAIL_INFO: AlgoInfo = AlgoInfo {
+        id: "other_avail",
+        name: "Other",
+        summary: "Test double: cut_disjoint under another id",
+        version: 1,
+        aliases: &[],
+        citation: None,
+    };
+
+    struct OtherAvail;
+
+    impl AvailabilityAlgorithm for OtherAvail {
+        fn info(&self) -> &'static AlgoInfo {
+            &OTHER_AVAIL_INFO
+        }
+        fn input(&self) -> SetKind {
+            SetKind::Cuts
+        }
+        fn prepare(
+            &self,
+            sets: &SetFamily,
+            ctl: &dyn Control,
+        ) -> Result<Box<dyn crate::Prepared>, Error> {
+            CutDisjoint.prepare(sets, ctl)
+        }
+    }
+
+    fn run_cached(plan: &Plan, g: &Graph, cache: &mut Cache) -> (PairResult, Recorder) {
+        let ctl = Recorder::default();
+        let scenarios = [ProbabilityMap::uniform(3, 0.5)];
+        let result = run_pair_cached(plan, g, 0, 2, &scenarios, &ctl, cache);
+        (result, ctl)
+    }
+
+    #[test]
+    fn keys_follow_the_plan() {
+        let fp = chain().fingerprint();
+        let paths = PathKey {
+            graph: fp,
+            src: 0,
+            dst: 2,
+            algo: AlgoKey::from(Dfs.info()),
+        };
+        let cuts = CutKey {
+            paths,
+            algo: AlgoKey::from(&FAKE_INFO),
+        };
+
+        let full = Plan::new(&Dfs, Some(&ChainCuts), Some(&CutDisjoint)).unwrap();
+        let bare = Plan::new(&Dfs, None, None).unwrap();
+
+        assert_eq!(
+            full.keys(&fp, 0, 2),
+            PairKeys {
+                paths,
+                cuts: Some(cuts),
+                prepare: Some(PrepareKey {
+                    sets: SetKey::Cuts(cuts),
+                    algo: AlgoKey::from(CutDisjoint.info()),
+                }),
+            }
+        );
+        assert_eq!(
+            bare.keys(&fp, 0, 2),
+            PairKeys {
+                paths,
+                cuts: None,
+                prepare: None
+            }
+        );
+    }
+
+    #[test]
+    fn second_run_only_evaluates() {
+        let plan = Plan::new(&Dfs, Some(&ChainCuts), Some(&CutDisjoint)).unwrap();
+        let g = chain();
+        let mut cache = Cache::new(&g);
+
+        let (first, _) = run_cached(&plan, &g, &mut cache);
+        let (second, ctl) = run_cached(&plan, &g, &mut cache);
+
+        assert_eq!(first, second);
+        assert_eq!(second.availability, [0.125]);
+        use {Stage::*, StageEvent::*};
+        assert_eq!(ctl.stages(), [(Evaluate, Started), (Evaluate, Finished)]);
+        let keys = plan.keys(&g.fingerprint(), 0, 2);
+        assert_eq!(cache.paths(&keys.paths).unwrap().sets.len(), 1);
+        assert_eq!(cache.cuts(&keys.cuts.unwrap()).unwrap().sets.len(), 3);
+        assert!(cache.prepared(&keys.prepare.unwrap()).is_some());
+    }
+
+    #[test]
+    fn changed_stage_and_everything_after_it_rerun() {
+        let g = chain();
+        let mut cache = Cache::new(&g);
+        let plan = Plan::new(&Dfs, Some(&ChainCuts), Some(&CutDisjoint)).unwrap();
+        run_cached(&plan, &g, &mut cache);
+        use {Stage::*, StageEvent::*};
+
+        let other_avail = Plan::new(&Dfs, Some(&ChainCuts), Some(&OtherAvail)).unwrap();
+        let (_, ctl) = run_cached(&other_avail, &g, &mut cache);
+        assert_eq!(
+            ctl.stages(),
+            [
+                (Prepare, Started),
+                (Prepare, Finished),
+                (Evaluate, Started),
+                (Evaluate, Finished)
+            ]
+        );
+
+        let new_version = Plan::new(&Dfs, Some(&ChainCutsV2), Some(&CutDisjoint)).unwrap();
+        let (_, ctl) = run_cached(&new_version, &g, &mut cache);
+        assert_eq!(ctl.stages()[0], (Cuts, Started));
+        assert_eq!(ctl.stages().len(), 6);
+
+        // Same structure, different edge order: same fingerprint, so a full hit
+        let reordered = Graph::from_edges(3, &[(2, 1), (1, 0)]).unwrap();
+        let (_, ctl) = run_cached(&plan, &reordered, &mut cache);
+        assert_eq!(ctl.stages().len(), 2);
+    }
+
+    #[test]
+    fn failed_stage_is_not_cached() {
+        let plan = Plan::new(&Dfs, Some(&FailingCuts), Some(&CutDisjoint)).unwrap();
+        let g = chain();
+        let mut cache = Cache::new(&g);
+
+        run_cached(&plan, &g, &mut cache);
+        let (result, ctl) = run_cached(&plan, &g, &mut cache);
+
+        assert_eq!(result.error, Some(Error::TooManySets { limit: 0 }));
+        assert_eq!(result.path_count, Some(1));
+        use {Stage::*, StageEvent::*};
+        assert_eq!(ctl.stages(), [(Cuts, Started), (Cuts, Finished)]);
     }
 
     #[test]
