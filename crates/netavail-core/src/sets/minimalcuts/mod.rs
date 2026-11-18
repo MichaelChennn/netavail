@@ -2,9 +2,11 @@
 
 mod common;
 mod decision_tree;
+mod path_product;
 mod shannon;
 
 pub use decision_tree::DecisionTree;
+pub use path_product::PathProduct;
 pub use shannon::Shannon;
 
 use crate::control::Control;
