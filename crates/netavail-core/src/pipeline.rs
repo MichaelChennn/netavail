@@ -154,6 +154,8 @@ fn run_stages(
     cache: &mut Cache,
     result: &mut PairResult,
 ) -> Result<(), Error> {
+    // Before the cache lookup, and in one place for every algorithm
+    g.check_pair(src, dst)?;
     // A short scenario would make evaluate panic; in the browser that kills the Worker
     let node_count = g.node_count();
     if plan.availability.is_some()

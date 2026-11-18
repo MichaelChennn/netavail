@@ -35,9 +35,8 @@ impl PathAlgorithm for Dfs {
         dst: NodeId,
         ctl: &dyn Control,
     ) -> Result<SetFamily, Error> {
-        if src == dst || src >= g.node_count() || dst >= g.node_count() {
-            return Err(Error::InvalidPair { src, dst });
-        }
+        // Also checked by the pipeline; kept for direct callers
+        g.check_pair(src, dst)?;
         let mut sets = Vec::new();
 
         // Stack-based iterative DFS

@@ -44,6 +44,14 @@ impl Graph {
         self.adj.len() as u32
     }
 
+    /// Fails with `InvalidPair` unless src and dst differ and both exist.
+    pub fn check_pair(&self, src: NodeId, dst: NodeId) -> Result<(), Error> {
+        if src == dst || src >= self.node_count() || dst >= self.node_count() {
+            return Err(Error::InvalidPair { src, dst });
+        }
+        Ok(())
+    }
+
     /// Neighbors of `u` in edge input order. Panics if `u` is out of range.
     pub fn neighbors(&self, u: NodeId) -> &[NodeId] {
         &self.adj[u as usize]
@@ -91,6 +99,16 @@ impl Fingerprint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn check_pair_rejects_equal_or_missing_nodes() {
+        let g = Graph::from_edges(3, &[(0, 1), (1, 2)]).unwrap();
+
+        assert_eq!(g.check_pair(0, 2), Ok(()));
+        for (src, dst) in [(1, 1), (0, 3), (3, 0)] {
+            assert_eq!(g.check_pair(src, dst), Err(Error::InvalidPair { src, dst }));
+        }
+    }
 
     #[test]
     fn neighbors_follow_edge_input_order_in_both_directions() {

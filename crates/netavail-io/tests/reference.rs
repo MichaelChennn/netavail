@@ -2,11 +2,8 @@
 
 mod common;
 
-use std::collections::HashMap;
-
-use netavail_core::registry::AlgoInfo;
-use netavail_core::types::{NodeId, SetFamily, SetKind};
-use netavail_core::{Control, CutAlgorithm, Error, NoControl, Plan, all_pairs, registry, run_all};
+use netavail_core::types::SetKind;
+use netavail_core::{NoControl, Plan, all_pairs, registry, run_all};
 use netavail_io::Topology;
 use netavail_io::reference::{
     check_availability, check_cuts, check_paths, read_availability, read_sets, scenarios,
@@ -104,28 +101,7 @@ fn availability_algorithms_match_reference_availability() {
     );
 }
 
-static REFERENCE_CUTS: AlgoInfo = AlgoInfo {
-    id: "reference_cuts",
-    name: "Reference cuts",
-    summary: "Test double: returns the cut sets from Mincutset_<T>.csv",
-    version: 1,
-    aliases: &[],
-    citation: None,
-};
-
-/// Stands in for a cut algorithm until stage 4 ports one.
-struct ReferenceCuts(HashMap<(NodeId, NodeId), SetFamily>);
-
-impl CutAlgorithm for ReferenceCuts {
-    fn info(&self) -> &'static AlgoInfo {
-        &REFERENCE_CUTS
-    }
-    fn from_paths(&self, paths: &SetFamily, _: &dyn Control) -> Result<SetFamily, Error> {
-        Ok(self.0[&(paths.src, paths.dst)].clone())
-    }
-}
-
-/// The whole pipeline (paths -> reference cuts -> availability) over all pairs.
+/// The whole pipeline (paths -> cuts -> availability) over all pairs, every algorithm combination.
 #[test]
 fn pipeline_matches_reference_on_all_pairs() {
     let mut failures = Vec::new();
@@ -141,53 +117,59 @@ fn pipeline_matches_reference_on_all_pairs() {
         let table =
             read_availability(&common::read(name, &format!("Availability_{name}.csv"))).unwrap();
         let scenarios = scenarios(&table, nodes);
-        // Plan takes &'static; leaking one small map per topology is fine in a test
-        let cut_algo: &'static ReferenceCuts = Box::leak(Box::new(ReferenceCuts(
-            cuts.iter().map(|f| ((f.src, f.dst), f.clone())).collect(),
-        )));
 
-        for &path_algo in registry::path_algorithms() {
-            for &avail_algo in registry::availability_algorithms() {
-                let ids = format!("{}+{}", path_algo.info().id, avail_algo.info().id);
-                let plan = Plan::new(path_algo, Some(cut_algo), Some(avail_algo)).unwrap();
-                let results = run_all(
-                    &plan,
-                    topo.graph(),
-                    &all_pairs(nodes),
-                    &scenarios,
-                    &NoControl,
-                );
-                assert_eq!(
-                    results.len(),
-                    table.rows.len(),
-                    "{ids} {name}: result count"
-                );
+        let combos = registry::path_algorithms().iter().flat_map(|&p| {
+            registry::cut_algorithms().iter().flat_map(move |&c| {
+                registry::availability_algorithms()
+                    .iter()
+                    .map(move |&a| (p, c, a))
+            })
+        });
+        for (path_algo, cut_algo, avail_algo) in combos {
+            let ids = format!(
+                "{}+{}+{}",
+                path_algo.info().id,
+                cut_algo.info().id,
+                avail_algo.info().id
+            );
+            let plan = Plan::new(path_algo, Some(cut_algo), Some(avail_algo)).unwrap();
+            let results = run_all(
+                &plan,
+                topo.graph(),
+                &all_pairs(nodes),
+                &scenarios,
+                &NoControl,
+            );
+            assert_eq!(
+                results.len(),
+                table.rows.len(),
+                "{ids} {name}: result count"
+            );
 
-                for (i, result) in results.iter().enumerate() {
-                    let row = &table.rows[i];
-                    let pair = (result.src, result.dst);
-                    assert_eq!(pair, (row.src, row.dst), "{ids} {name}: pair order");
-                    let counts = (result.path_count, result.cut_count, &result.error);
-                    let expected = (Some(paths[i].sets.len()), Some(cuts[i].sets.len()), &None);
-                    if counts != expected {
-                        failures.push(format!("{ids} {name} {pair:?}: {counts:?} vs {expected:?}"));
-                        continue;
+            for (i, result) in results.iter().enumerate() {
+                let row = &table.rows[i];
+                let pair = (result.src, result.dst);
+                assert_eq!(pair, (row.src, row.dst), "{ids} {name}: pair order");
+                let counts = (result.path_count, result.cut_count, &result.error);
+                let expected = (Some(paths[i].sets.len()), Some(cuts[i].sets.len()), &None);
+                if counts != expected {
+                    failures.push(format!("{ids} {name} {pair:?}: {counts:?} vs {expected:?}"));
+                    continue;
+                }
+                for ((p, &actual), &expected) in table
+                    .probs
+                    .iter()
+                    .zip(&result.availability)
+                    .zip(&row.values)
+                {
+                    if (actual - expected).abs() > 1e-9 {
+                        failures.push(format!(
+                            "{ids} {name} {pair:?} p={p}: {actual} vs {expected}"
+                        ));
                     }
-                    for ((p, &actual), &expected) in table
-                        .probs
-                        .iter()
-                        .zip(&result.availability)
-                        .zip(&row.values)
-                    {
-                        if (actual - expected).abs() > 1e-9 {
-                            failures.push(format!(
-                                "{ids} {name} {pair:?} p={p}: {actual} vs {expected}"
-                            ));
-                        }
-                    }
-                    if result.availability.len() != row.values.len() {
-                        failures.push(format!("{ids} {name} {pair:?}: scenario count"));
-                    }
+                }
+                if result.availability.len() != row.values.len() {
+                    failures.push(format!("{ids} {name} {pair:?}: scenario count"));
                 }
             }
         }
