@@ -1,10 +1,12 @@
 //! Minimal cut set algorithms.
 
+mod combination;
 mod common;
 mod decision_tree;
 mod path_product;
 mod shannon;
 
+pub use combination::Combination;
 pub use decision_tree::DecisionTree;
 pub use path_product::PathProduct;
 pub use shannon::Shannon;
