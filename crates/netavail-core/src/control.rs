@@ -35,6 +35,11 @@ pub trait Control: Sync {
     fn max_sets(&self) -> Option<usize> {
         None
     }
+
+    /// Largest number of product terms an availability algorithm may hold; `None` means no limit.
+    fn max_terms(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// A [`Control`] that never cancels, records nothing and sets no limit.

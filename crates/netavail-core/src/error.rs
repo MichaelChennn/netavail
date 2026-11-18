@@ -19,6 +19,8 @@ pub enum Error {
     InvalidPair { src: NodeId, dst: NodeId },
     #[error("more than {limit} sets; raise the limit or pick a smaller topology")]
     TooManySets { limit: usize },
+    #[error("more than {limit} product terms; raise the limit or pick a smaller topology")]
+    TooManyTerms { limit: usize },
     #[error("expected {expected:?} as input, got {found:?}")]
     WrongInputKind { expected: SetKind, found: SetKind },
     #[error("the availability algorithm needs cut sets, but no cut algorithm was chosen")]

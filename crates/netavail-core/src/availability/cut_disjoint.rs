@@ -55,6 +55,12 @@ impl AvailabilityAlgorithm for CutDisjoint {
             let selected = rest.next().unwrap();
             pending = rest.flat_map(|set| make_disjoint(&selected, set)).collect();
             terms.push(selected);
+            // Terms can grow exponentially; the browser sets a limit so memory stays bounded
+            if let Some(limit) = ctl.max_terms()
+                && terms.len() + pending.len() > limit
+            {
+                return Err(Error::TooManyTerms { limit });
+            }
         }
         Ok(Box::new(ProbaSets {
             src: cuts.src,
@@ -183,6 +189,25 @@ mod tests {
         fn check(&self) -> Result<(), Cancelled> {
             Err(Cancelled)
         }
+    }
+
+    struct MaxTerms(usize);
+    impl Control for MaxTerms {
+        fn max_terms(&self) -> Option<usize> {
+            Some(self.0)
+        }
+    }
+
+    /// The two-chain cuts hold at most 5 terms at once (1 kept + 4 pending after the first round).
+    #[test]
+    fn fails_once_terms_exceed_max_terms() {
+        let family = cuts(0, 5, vec![vec![1, 2], vec![1, 4], vec![3, 2], vec![3, 4]]);
+
+        let err = CutDisjoint.prepare(&family, &MaxTerms(4)).err();
+        let ok = CutDisjoint.prepare(&family, &MaxTerms(5));
+
+        assert_eq!(err, Some(Error::TooManyTerms { limit: 4 }));
+        assert!(ok.is_ok());
     }
 
     #[test]
