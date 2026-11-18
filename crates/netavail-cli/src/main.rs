@@ -49,6 +49,9 @@ enum Command {
         /// Node availabilities, one scenario each; every node gets the same p.
         #[arg(long, value_delimiter = ',', default_value = "0.9,0.99,0.999,0.9999")]
         p: Vec<f64>,
+        /// Link availability, the same for every link; links never fail if omitted.
+        #[arg(long)]
+        link_prob: Option<f64>,
         /// Result CSV; standard output if omitted.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -77,9 +80,10 @@ fn main() -> ExitCode {
             cuts,
             avail,
             p,
+            link_prob,
             out,
             sets_dir,
-        } => run(&topology, &paths, cuts, avail, &p, out, sets_dir).map(|()| true),
+        } => run(&topology, &paths, cuts, avail, &p, link_prob, out, sets_dir).map(|()| true),
         Command::Verify {
             topology,
             reference_dir,
@@ -157,12 +161,14 @@ fn clock() -> f64 {
     START.get_or_init(Instant::now).elapsed().as_secs_f64() * 1e3
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run(
     topology: &Path,
     paths: &str,
     cuts: Option<String>,
     avail: Option<String>,
     probs: &[f64],
+    link_prob: Option<f64>,
     out: Option<PathBuf>,
     sets_dir: Option<PathBuf>,
 ) -> Result<()> {
@@ -181,19 +187,33 @@ fn run(
     if let Some(&p) = probs.iter().find(|p| !(0.0..=1.0).contains(*p)) {
         bail!("--p {p} is not in [0, 1]");
     }
+    if let Some(q) = link_prob.filter(|q| !(0.0..=1.0).contains(q)) {
+        bail!("--link-prob {q} is not in [0, 1]");
+    }
     let plan = Plan::new(path_algo, cut_algo, avail_algo)?;
-    let g = topo.graph();
-    let n = g.node_count() as usize;
+    let n = topo.graph().node_count() as usize;
+    // With link failures, edge i is node n + i of the link graph and has availability q
+    let link_graph;
+    let (g, link_probs) = match link_prob {
+        Some(q) => {
+            link_graph = topo.link_graph();
+            (&link_graph, vec![q; topo.edges().len()])
+        }
+        None => (topo.graph(), Vec::new()),
+    };
     let scenarios: Vec<_> = probs
         .iter()
-        .map(|&p| netavail_core::ProbabilityMap::uniform(n, p))
+        .map(|&p| {
+            netavail_core::ProbabilityMap::from_nodes(&[vec![p; n], link_probs.clone()].concat())
+        })
         .collect();
     ctrlc::set_handler(|| CANCELLED.store(true, Ordering::Relaxed))
         .context("installing the Ctrl-C handler")?;
 
     // Sets are kept only when they will be exported
     let mut cache = sets_dir.as_ref().map(|_| Cache::new(g));
-    let pairs = all_pairs(g.node_count());
+    // Pairs are original nodes only; link nodes are never a source or destination
+    let pairs = all_pairs(n as u32);
     let started = clock();
     let mut reports = Vec::with_capacity(pairs.len());
     for &(src, dst) in &pairs {

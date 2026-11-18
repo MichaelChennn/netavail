@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use netavail_core::transform::to_link_graph;
 use netavail_core::types::NodeId;
 use netavail_core::{Graph, ProbabilityMap};
 use serde::Deserialize;
@@ -18,6 +19,8 @@ pub enum Error {
     UnknownNodeId { edge: usize, id: String },
     #[error("node {node:?}: probability {prob} is not in [0, 1]")]
     InvalidProbability { node: String, prob: f64 },
+    #[error("edge {edge}: probability {prob} is not in [0, 1]")]
+    InvalidLinkProbability { edge: usize, prob: f64 },
     #[error(transparent)]
     Graph(#[from] netavail_core::Error),
 }
@@ -111,6 +114,12 @@ impl Topology {
             .iter()
             .enumerate()
             .map(|(i, e)| {
+                if !(0.0..=1.0).contains(&e.prob) {
+                    return Err(Error::InvalidLinkProbability {
+                        edge: i,
+                        prob: e.prob,
+                    });
+                }
                 Ok(Edge {
                     source: lookup(i, &e.source)?,
                     target: lookup(i, &e.target)?,
@@ -160,6 +169,15 @@ impl Topology {
     pub fn probabilities(&self) -> ProbabilityMap {
         let probs: Vec<f64> = self.nodes.iter().map(|n| n.prob).collect();
         ProbabilityMap::from_nodes(&probs)
+    }
+
+    /// The graph with every edge turned into a node, so links can fail (D18).
+    /// Edge `i` becomes node `n + i`; see [`netavail_core::transform::to_link_graph`].
+    pub fn link_graph(&self) -> Graph {
+        let pairs: Vec<(NodeId, NodeId)> =
+            self.edges.iter().map(|e| (e.source, e.target)).collect();
+        to_link_graph(self.nodes.len() as u32, &pairs)
+            .expect("edges were checked when the topology was loaded")
     }
 }
 
@@ -276,6 +294,36 @@ mod tests {
             matches!(&err, Error::InvalidProbability { node, prob } if node == "b" && *prob == 1.5),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn rejects_link_probability_outside_unit_interval() {
+        let err = load_err(
+            r#"{"nodes": [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+                "edges": [{"source": "a", "target": "b"}, {"source": "b", "target": "c", "prob": -0.1}]}"#,
+        );
+
+        assert!(
+            matches!(err, Error::InvalidLinkProbability { edge: 1, prob } if prob == -0.1),
+            "{err:?}"
+        );
+    }
+
+    /// Path a-b-c: edges 0 and 1 become nodes 3 and 4.
+    #[test]
+    fn link_graph_puts_a_node_on_each_edge() {
+        let t = Topology::from_json(
+            r#"{"nodes": [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+                "edges": [{"source": "a", "target": "b"}, {"source": "b", "target": "c"}]}"#,
+        )
+        .unwrap();
+
+        let g = t.link_graph();
+
+        assert_eq!(g.node_count(), 5);
+        assert_eq!(g.neighbors(1), &[3, 4]);
+        assert_eq!(g.neighbors(3), &[0, 1]);
+        assert_eq!(g.neighbors(4), &[1, 2]);
     }
 
     #[test]
