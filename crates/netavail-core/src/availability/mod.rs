@@ -2,8 +2,10 @@
 
 mod cut_disjoint;
 mod disjoint;
+mod path_disjoint;
 
 pub use cut_disjoint::CutDisjoint;
+pub use path_disjoint::PathDisjoint;
 
 use crate::control::Control;
 use crate::error::Error;

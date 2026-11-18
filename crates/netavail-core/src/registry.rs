@@ -2,7 +2,7 @@
 //!
 //! Adding an algorithm = one new file implementing its trait + one line here.
 
-use crate::availability::{AvailabilityAlgorithm, CutDisjoint};
+use crate::availability::{AvailabilityAlgorithm, CutDisjoint, PathDisjoint};
 use crate::sets::minimalcuts::{
     Combination, CombinationBits, CutAlgorithm, DecisionTree, PathProduct, Shannon,
 };
@@ -45,7 +45,7 @@ static CUTS: &[&dyn CutAlgorithm] = &[
     &Combination,
     &CombinationBits,
 ];
-static AVAILABILITY: &[&dyn AvailabilityAlgorithm] = &[&CutDisjoint];
+static AVAILABILITY: &[&dyn AvailabilityAlgorithm] = &[&CutDisjoint, &PathDisjoint];
 
 pub fn path_algorithms() -> &'static [&'static dyn PathAlgorithm] {
     PATHS
@@ -90,6 +90,10 @@ mod tests {
             "path_product"
         );
         assert_eq!(find_availability("mcs").unwrap().info().id, "cut_disjoint");
+        assert_eq!(
+            find_availability("pathset").unwrap().info().id,
+            "path_disjoint"
+        );
         assert!(find_availability("dfs").is_none());
     }
 
