@@ -10,6 +10,7 @@ repository = "https://github.com/MichaelChennn/netavail"
 
 [workspace.dependencies]
 netavail-core = { path = "crates/netavail-core" }
+netavail-io = { path = "crates/netavail-io" }
 blake3 = { version = "1.8", features = ["pure"] }
 proptest = "1"
 serde = { version = "1", features = ["derive"] }
