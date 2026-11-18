@@ -9,9 +9,10 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use netavail_core::control::Cancelled;
+use netavail_core::graph::Fingerprint;
 use netavail_core::registry::{self, AlgoInfo};
 use netavail_core::types::{SetFamily, SetKind};
-use netavail_core::{Cache, Control, Plan, all_pairs, run_pair, run_pair_cached};
+use netavail_core::{Cache, Control, Plan, all_pairs, map_pairs, run_pair_cached};
 use netavail_io::Topology;
 use netavail_io::reference::{
     check_availability, check_cuts, check_paths, read_availability, read_sets, validate_sets,
@@ -59,6 +60,9 @@ enum Command {
         /// Also export the sets in the reference format, with meta.json.
         #[arg(long)]
         sets_dir: Option<PathBuf>,
+        /// Worker threads for the node pairs; 0 means one per CPU core.
+        #[arg(long, default_value_t = 0)]
+        threads: usize,
     },
     /// Compare every registered algorithm with reference answers.
     Verify {
@@ -84,7 +88,15 @@ fn main() -> ExitCode {
             link_prob,
             out,
             sets_dir,
-        } => run(&topology, &paths, cuts, avail, &p, link_prob, out, sets_dir).map(|()| true),
+            threads,
+        } => rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .context("starting the thread pool")
+            .and_then(|pool| {
+                pool.install(|| run(&topology, &paths, cuts, avail, &p, link_prob, out, sets_dir))
+            })
+            .map(|()| true),
         Command::Verify {
             topology,
             reference_dir,
@@ -211,26 +223,25 @@ fn run(
     ctrlc::set_handler(|| CANCELLED.store(true, Ordering::Relaxed))
         .context("installing the Ctrl-C handler")?;
 
-    // Sets are kept only when they will be exported
-    let mut cache = sets_dir.as_ref().map(|_| Cache::new(g));
     // Pairs are original nodes only; link nodes are never a source or destination
     let pairs = all_pairs(n as u32);
     let started = clock();
-    let mut reports = Vec::with_capacity(pairs.len());
-    for &(src, dst) in &pairs {
-        if CANCELLED.load(Ordering::Relaxed) {
-            eprintln!("cancelled after {} of {} pairs", reports.len(), pairs.len());
-            break;
-        }
+    let outputs = map_pairs(&pairs, &CtrlC, |src, dst| {
         let timer = StageTimer::new(&clock, &CtrlC);
-        let result = match cache.as_mut() {
-            Some(cache) => run_pair_cached(&plan, g, src, dst, &scenarios, &timer, cache),
-            None => run_pair(&plan, g, src, dst, &scenarios, &timer),
-        };
-        reports.push(PairReport {
-            result,
-            times: timer.times(),
+        let mut cache = Cache::new(g);
+        let result = run_pair_cached(&plan, g, src, dst, &scenarios, &timer, &mut cache);
+        // Sets are kept only when they will be exported
+        let sets = sets_dir.is_some().then(|| {
+            let keys = plan.keys(cache.graph(), src, dst);
+            let cuts = keys.cuts.and_then(|k| cache.cuts(&k).cloned());
+            (cache.paths(&keys.paths).cloned(), cuts)
         });
+        let times = timer.times();
+        (PairReport { result, times }, sets)
+    });
+    let (reports, sets): (Vec<_>, Vec<_>) = outputs.into_iter().unzip();
+    if reports.len() < pairs.len() {
+        eprintln!("cancelled after {} of {} pairs", reports.len(), pairs.len());
     }
     let failed = reports.iter().filter(|r| r.result.error.is_some()).count();
     eprintln!(
@@ -247,8 +258,12 @@ fn run(
         }
         None => print!("{csv}"),
     }
-    if let (Some(dir), Some(cache)) = (sets_dir, cache) {
-        export_sets(&dir, &topo, &plan, &pairs[..reports.len()], &cache)?;
+    if let Some(dir) = sets_dir {
+        let (paths, cuts): (Vec<_>, Vec<_>) = sets.into_iter().flatten().unzip();
+        // A pair that failed has no sets; it is left out of the export
+        let paths: Vec<_> = paths.into_iter().flatten().collect();
+        let cuts: Vec<_> = cuts.into_iter().flatten().collect();
+        export_sets(&dir, &topo, &plan, g.fingerprint(), &paths, &cuts)?;
     }
     Ok(())
 }
@@ -262,23 +277,11 @@ fn export_sets(
     dir: &Path,
     topo: &Topology,
     plan: &Plan,
-    pairs: &[(u32, u32)],
-    cache: &Cache,
+    graph: Fingerprint,
+    paths: &[SetFamily],
+    cuts: &[SetFamily],
 ) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    let keys: Vec<_> = pairs
-        .iter()
-        .map(|&(s, d)| plan.keys(cache.graph(), s, d))
-        .collect();
-    // A pair that failed has no sets; it is left out of the export
-    let paths: Vec<SetFamily> = keys
-        .iter()
-        .filter_map(|k| cache.paths(&k.paths).cloned())
-        .collect();
-    let cuts: Vec<SetFamily> = keys
-        .iter()
-        .filter_map(|k| cache.cuts(&k.cuts?).cloned())
-        .collect();
     let name = if topo.name().is_empty() {
         "topology"
     } else {
@@ -288,14 +291,14 @@ fn export_sets(
         let path = dir.join(file);
         std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))
     };
-    write(format!("Pathset_{name}.csv"), sets_csv(&paths))?;
+    write(format!("Pathset_{name}.csv"), sets_csv(paths))?;
     // Only the algorithm parts of these keys matter here
-    let algos = plan.keys(cache.graph(), 0, 0);
+    let algos = plan.keys(&graph, 0, 0);
     if algos.cuts.is_some() {
-        write(format!("Mincutset_{name}.csv"), sets_csv(&cuts))?;
+        write(format!("Mincutset_{name}.csv"), sets_csv(cuts))?;
     }
     let meta = Meta {
-        graph: hex(cache.graph()),
+        graph: hex(&graph),
         paths: AlgoMeta::from(algos.paths.algo),
         cuts: algos.cuts.map(|c| AlgoMeta::from(c.algo)),
     };

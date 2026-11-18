@@ -154,3 +154,36 @@ fn run_with_perfect_links_matches_run_without_links() {
         assert!((a - b).abs() < 1e-12, "{a} vs {b}");
     }
 }
+
+/// One thread and several threads give the same rows in the same order.
+#[test]
+fn run_threads_do_not_change_results() {
+    let topo = reference_dir().join("topology.json");
+    let topo = topo.to_str().unwrap();
+    // Columns: source,target,paths,cuts,<p>,paths_ms,cuts_ms,prepare_ms,evaluate_ms,error
+    let rows = |threads: &str| -> Vec<String> {
+        let args = [
+            "run",
+            topo,
+            "--cuts",
+            "decision_tree",
+            "--avail",
+            "cut_disjoint",
+            "--p",
+            "0.9",
+            "--threads",
+            threads,
+        ];
+        let out = netavail(&args);
+        assert!(out.status.success());
+        stdout(&out)
+            .lines()
+            .map(|l| {
+                let cells: Vec<_> = l.split(',').collect();
+                [&cells[..5], &cells[9..]].concat().join(",")
+            })
+            .collect()
+    };
+
+    assert_eq!(rows("1"), rows("4"));
+}

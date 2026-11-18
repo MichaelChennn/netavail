@@ -11,8 +11,9 @@ name = "netavail"
 path = "src/main.rs"
 
 [dependencies]
-netavail-core.workspace = true
+netavail-core = { workspace = true, features = ["parallel"] }
 netavail-io.workspace = true
 anyhow = "1"
 clap = { version = "4.6", features = ["derive"] }
 ctrlc = "3.5"
+rayon = "1.11"

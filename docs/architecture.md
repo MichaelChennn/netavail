@@ -326,7 +326,7 @@ graph LR
 ```
 ci.yml（push / PR）
 ├─ Linux、macOS、Windows：cargo fmt --check、cargo clippy -D warnings、cargo test
-├─ Linux：cargo test --features parallel
+├─ Linux：cargo test -p netavail-core（不开 parallel，即 wasm 用的串行版；workspace 测试因 CLI 而开着 parallel）
 └─ Linux：wasm32 目标的 clippy + wasm 冒烟测试（wasm-pack test --node）
 
 pages.yml（push 到 main）

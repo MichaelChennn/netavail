@@ -581,6 +581,7 @@ dependencies = [
  "ctrlc",
  "netavail-core",
  "netavail-io",
+ "rayon",
 ]
 
 [[package]]

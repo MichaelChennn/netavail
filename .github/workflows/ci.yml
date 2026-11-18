@@ -31,14 +31,16 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
-  parallel:
-    name: test with --features parallel
+  # The CLI turns on core's `parallel`, so the workspace run above tests the parallel build;
+  # this tests the serial build that wasm uses
+  serial:
+    name: netavail-core without parallel
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy -p netavail-core --all-targets --features parallel -- -D warnings
-      - run: cargo test -p netavail-core --features parallel
+      - run: cargo clippy -p netavail-core --all-targets -- -D warnings
+      - run: cargo test -p netavail-core
 
   wasm:
     name: wasm32 build and Node smoke test
