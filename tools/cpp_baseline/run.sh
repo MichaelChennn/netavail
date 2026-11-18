@@ -17,6 +17,7 @@ mkdir -p "$out"
 if [[ ! -x "$out/bench" || "$here/bench.cpp" -nt "$out/bench" ]]; then
   "$cxx" -std=c++20 -O3 -march=native -fopenmp -I "$suite/include" \
     "$here/bench.cpp" "$suite/common.cpp" "$suite/sets/minimalpaths.cpp" \
+    "$suite"/sets/cutsets_*.cpp "$suite/sets/absorb_list.cpp" \
     "$suite/availability/mcs.cpp" -o "$out/bench"
 fi
 

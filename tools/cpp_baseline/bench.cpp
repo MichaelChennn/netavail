@@ -1,7 +1,8 @@
 // Times the PyRBD-Suite C++ code on the same work as the criterion benches.
 //
-// Usage: bench <prepared.txt> <paths|mcs|mcs-pairs> [repeats]
+// Usage: bench <prepared.txt> <paths|cuts:METHOD|mcs|mcs-pairs> [repeats]
 //   paths      sets::minimalpaths on every pair src < dst
+//   cuts:M     sets::minimalcuts (paths included) with method M on every pair src < dst
 //   mcs        mcs::toProbaSet + probaSetToAvail at p = 0.9 .. 0.9999 on every cut family
 //   mcs-pairs  one line per family: src dst cuts terms ms (single run)
 // Prints the median time in ms and a checksum to compare with the Rust side.
@@ -14,6 +15,8 @@
 #include <cstdio>
 #include <fstream>
 #include <functional>
+#include <iostream>
+#include <sstream>
 #include <string>
 
 using namespace pyrbd_core;
@@ -86,6 +89,22 @@ int main(int argc, char** argv) {
                     total += sets::minimalpaths(adj, s, d).size();
         });
         std::printf("paths %.3f ms, %ld paths\n", t, total);
+    } else if (mode.rfind("cuts:", 0) == 0) {
+        std::string method = mode.substr(5);
+        // combination prints [DEBUG] lines to std::cout; keep them out of the timing output
+        std::ostringstream sink;
+        auto* old = std::cout.rdbuf(sink.rdbuf());
+        long total = 0;
+        double t = median_ms(repeats, [&] {
+            total = 0;
+            for (int s = 1; s <= n; ++s)
+                for (int d = s + 1; d <= n; ++d) {
+                    total += sets::minimalcuts(adj, s, d, n, method).size();
+                    sink.str("");
+                }
+        });
+        std::cout.rdbuf(old);
+        std::printf("cuts:%s %.3f ms, %ld cuts\n", method.c_str(), t, total);
     } else if (mode == "mcs" || mode == "mcs-pairs") {
         std::map<int, double> probs;
         std::vector<ProbabilityMap> maps;

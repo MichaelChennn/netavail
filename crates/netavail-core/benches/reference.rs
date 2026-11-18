@@ -1,5 +1,6 @@
 //! Same work as `tools/cpp_baseline/bench.cpp`, on the reference topologies:
 //! - `paths`: dfs on every pair src < dst
+//! - `cuts/<id>`: dfs + the cut algorithm on every pair src < dst (the C++ finds paths itself)
 //! - `cut_disjoint`: prepare + evaluate at p = 0.9 .. 0.9999 on every reference cut family
 //!
 //! Checksums are printed once so the totals can be compared with the C++ output.
@@ -9,6 +10,8 @@ use std::path::PathBuf;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use netavail_core::availability::{AvailabilityAlgorithm, CutDisjoint};
+use netavail_core::registry::cut_algorithms;
+use netavail_core::sets::minimalcuts::CutAlgorithm;
 use netavail_core::sets::minimalpaths::{Dfs, PathAlgorithm};
 use netavail_core::types::{SetFamily, SetKind};
 use netavail_core::{Graph, NoControl, ProbabilityMap};
@@ -48,6 +51,18 @@ fn all_paths(g: &Graph) -> usize {
     total
 }
 
+fn all_cuts(g: &Graph, algo: &dyn CutAlgorithm) -> usize {
+    let n = g.node_count();
+    let mut total = 0;
+    for src in 0..n {
+        for dst in src + 1..n {
+            let paths = Dfs.find(g, src, dst, &NoControl).unwrap();
+            total += algo.from_paths(&paths, &NoControl).unwrap().sets.len();
+        }
+    }
+    total
+}
+
 fn all_availability(families: &[SetFamily], maps: &[ProbabilityMap]) -> f64 {
     let mut sum = 0.0;
     for f in families {
@@ -73,6 +88,13 @@ fn bench(c: &mut Criterion) {
         c.bench_function(&format!("paths/{name}"), |b| {
             b.iter(|| all_paths(black_box(g)))
         });
+        for &algo in cut_algorithms() {
+            let id = algo.info().id;
+            eprintln!("{name}: {id} {} cuts", all_cuts(g, algo));
+            c.bench_function(&format!("cuts/{id}/{name}"), |b| {
+                b.iter(|| all_cuts(black_box(g), algo))
+            });
+        }
         c.bench_function(&format!("cut_disjoint/{name}"), |b| {
             b.iter(|| all_availability(black_box(&cuts), &maps))
         });
