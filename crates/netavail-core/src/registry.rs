@@ -45,7 +45,14 @@ static CUTS: &[&dyn CutAlgorithm] = &[
     &Combination,
     &CombinationBits,
 ];
-static AVAILABILITY: &[&dyn AvailabilityAlgorithm] = &[&CutDisjoint, &PathDisjoint, &PathSdp];
+static AVAILABILITY: &[&dyn AvailabilityAlgorithm] = &[
+    &CutDisjoint,
+    &PathDisjoint,
+    &PathSdp,
+    // Threads only exist in the CLI, not in the browser (architecture.md §3.4)
+    #[cfg(feature = "parallel")]
+    &crate::availability::PathSdpParallel,
+];
 
 pub fn path_algorithms() -> &'static [&'static dyn PathAlgorithm] {
     PATHS

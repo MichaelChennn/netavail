@@ -197,7 +197,7 @@ pub fn run_all(plan: &Plan, g: &Graph, pairs: &[(NodeId, NodeId)],
 - `Plan::new` 检查搭配是否合法，例如可用度算法要割集，就必须选了割集算法。
 - 默认计算所有满足 i < j 的无序节点对，顺序为 (0,1), (0,2), …，与参考答案一致。
 - `PairResult` 包含 src、dst、路集数、割集数、每个场景的可用度、错误（如果有）。某一对出错不影响其它对。集合本身不放进结果，按需从缓存取。
-- `run_all` 在 feature `parallel` 打开时用 rayon（work stealing，自动做动态分配），关闭时串行。算法内部的并行（只有 `path_sdp`）也放在这个 feature 后面。
+- `run_all` 在 feature `parallel` 打开时用 rayon（work stealing，自动做动态分配），关闭时串行。算法内部的并行做成单独的算法，只在 feature `parallel` 打开时注册，所以只有 CLI 能用，浏览器没有。目前只有一个：`path_sdp_parallel`，移植自 C++ `toSDPSetParallel`。它把每条路径的乘积分到各个线程上算，再按路径顺序合并，结果和 `path_sdp` 逐位相同；路径少于 200 条时直接走串行版。
 
 ### 3.5 Control（D29）
 

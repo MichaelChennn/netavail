@@ -16,17 +16,19 @@ use crate::types::{Lit, NodeId, NodeSet, SetFamily, SetKind};
 
 pub struct PathSdp;
 
+const CITATION: Citation = Citation {
+    text: "S. Janardhanan, Y. Chen, W. Kellerer, C. Mas-Machuca, \"Leveraging Minimal Path \
+           Sets for Reliability Block Diagram Evaluation\", IEEE FNWF, 2025",
+    url: Some("https://ieeexplore.ieee.org/document/11317672"),
+};
+
 static INFO: AlgoInfo = AlgoInfo {
     id: "path_sdp",
     name: "SDP",
     summary: "Sum of disjoint products over sorted minimal path sets, with decomposition",
     version: 1,
     aliases: &["sdp"],
-    citation: Some(Citation {
-        text: "S. Janardhanan, Y. Chen, W. Kellerer, C. Mas-Machuca, \"Leveraging Minimal Path \
-               Sets for Reliability Block Diagram Evaluation\", IEEE FNWF, 2025",
-        url: Some("https://ieeexplore.ieee.org/document/11317672"),
-    }),
+    citation: Some(CITATION),
 };
 
 impl AvailabilityAlgorithm for PathSdp {
@@ -47,6 +49,43 @@ impl AvailabilityAlgorithm for PathSdp {
         }
         // No path (src and dst disconnected) gives no product, so availability 0
         let products = to_sdp_set(paths.sets.clone(), ctl)?;
+        Ok(Box::new(SdpProducts { products }))
+    }
+}
+
+/// [`PathSdp`] with the paths split across rayon's threads, ported from `toSDPSetParallel`.
+/// Same products in the same order, so the same availability bit for bit.
+#[cfg(feature = "parallel")]
+pub struct PathSdpParallel;
+
+#[cfg(feature = "parallel")]
+static PARALLEL_INFO: AlgoInfo = AlgoInfo {
+    id: "path_sdp_parallel",
+    name: "SDP (parallel)",
+    summary: "SDP with the products of each path computed in parallel; from 200 paths up",
+    version: 1,
+    aliases: &[],
+    citation: Some(CITATION),
+};
+
+#[cfg(feature = "parallel")]
+impl AvailabilityAlgorithm for PathSdpParallel {
+    fn info(&self) -> &'static AlgoInfo {
+        &PARALLEL_INFO
+    }
+
+    fn input(&self) -> SetKind {
+        SetKind::Paths
+    }
+
+    fn prepare(&self, paths: &SetFamily, ctl: &dyn Control) -> Result<Box<dyn Prepared>, Error> {
+        if paths.kind != SetKind::Paths {
+            return Err(Error::WrongInputKind {
+                expected: SetKind::Paths,
+                found: paths.kind,
+            });
+        }
+        let products = to_sdp_set_parallel(paths.sets.clone(), ctl)?;
         Ok(Box::new(SdpProducts { products }))
     }
 }
@@ -239,29 +278,66 @@ fn to_sdp_set(path_sets: Vec<NodeSet>, ctl: &dyn Control) -> Result<Vec<SdpSets>
     };
 
     let mut final_sdps = vec![vec![Sdp::normal(first.clone())]];
-    for (i, current_set) in sorted_path_set.iter().enumerate().skip(1) {
-        ctl.check()?;
-        let mut result_sdps = vec![Sdp::normal(current_set.clone())];
-        for preceding_set in &sorted_path_set[..i] {
-            result_sdps.push(Sdp::complementary(difference(preceding_set, current_set)));
-        }
-        // A preceding path inside this one: the product is impossible (non-minimal input)
-        if result_sdps
-            .iter()
-            .any(|sdp| sdp.complementary && sdp.set.is_empty())
-        {
-            continue;
-        }
-
-        let result_sdps = absorb_sdp_set(result_sdps);
-        if common_pair(&result_sdps).is_some() {
-            let mut decomposed = decompose_sdp_set(result_sdps, final_sdps.len(), ctl)?;
-            final_sdps.append(&mut decomposed);
-        } else {
-            final_sdps.push(result_sdps);
-        }
+    for i in 1..sorted_path_set.len() {
+        let mut products = path_products(&sorted_path_set, i, final_sdps.len(), ctl)?;
+        final_sdps.append(&mut products);
         check_terms(final_sdps.len(), ctl)?;
     }
+    Ok(final_sdps)
+}
+
+/// Path i AND NOT(each preceding path), split into independent products;
+/// `done` products exist already, for the term limit.
+fn path_products(
+    sorted_path_set: &[NodeSet],
+    i: usize,
+    done: usize,
+    ctl: &dyn Control,
+) -> Result<Vec<SdpSets>, Error> {
+    ctl.check()?;
+    let current_set = &sorted_path_set[i];
+    let mut result_sdps = vec![Sdp::normal(current_set.clone())];
+    for preceding_set in &sorted_path_set[..i] {
+        result_sdps.push(Sdp::complementary(difference(preceding_set, current_set)));
+    }
+    // A preceding path inside this one: the product is impossible (non-minimal input)
+    if result_sdps
+        .iter()
+        .any(|sdp| sdp.complementary && sdp.set.is_empty())
+    {
+        return Ok(Vec::new());
+    }
+
+    let result_sdps = absorb_sdp_set(result_sdps);
+    if common_pair(&result_sdps).is_some() {
+        decompose_sdp_set(result_sdps, done, ctl)
+    } else {
+        Ok(vec![result_sdps])
+    }
+}
+
+/// Below this many paths threads cost more than they save, so [`to_sdp_set`] runs (as in C++).
+#[cfg(feature = "parallel")]
+const PARALLEL_MIN_PATHS: usize = 200;
+
+/// [`to_sdp_set`] with each path's products computed in parallel, then joined in path order.
+/// The term limit applies per path while running and to the total at the end.
+#[cfg(feature = "parallel")]
+fn to_sdp_set_parallel(path_sets: Vec<NodeSet>, ctl: &dyn Control) -> Result<Vec<SdpSets>, Error> {
+    use rayon::prelude::*;
+
+    if path_sets.len() < PARALLEL_MIN_PATHS {
+        return to_sdp_set(path_sets, ctl);
+    }
+    let sorted_path_set = sort_path_set(path_sets);
+    let per_path = (1..sorted_path_set.len())
+        .into_par_iter()
+        .map(|i| path_products(&sorted_path_set, i, 0, ctl))
+        .collect::<Result<Vec<_>, Error>>()?;
+
+    let mut final_sdps = vec![vec![Sdp::normal(sorted_path_set[0].clone())]];
+    final_sdps.extend(per_path.into_iter().flatten());
+    check_terms(final_sdps.len(), ctl)?;
     Ok(final_sdps)
 }
 
@@ -467,5 +543,71 @@ mod tests {
         let err = PathSdp.prepare(&family, &CancelNow).err().unwrap();
 
         assert_eq!(err, Error::Cancelled);
+    }
+}
+
+#[cfg(all(test, feature = "parallel"))]
+mod parallel_tests {
+    use super::*;
+    use crate::control::{Cancelled, NoControl};
+    use crate::graph::Graph;
+    use crate::registry;
+    use crate::sets::minimalpaths::{Dfs, PathAlgorithm};
+
+    /// Minimal paths between opposite corners of an r x c grid; 3 x 9 gives 403.
+    fn grid_paths(r: u32, c: u32) -> SetFamily {
+        let id = |i: u32, j: u32| i * c + j;
+        let mut edges = Vec::new();
+        for i in 0..r {
+            for j in 0..c {
+                if j + 1 < c {
+                    edges.push((id(i, j), id(i, j + 1)));
+                }
+                if i + 1 < r {
+                    edges.push((id(i, j), id(i + 1, j)));
+                }
+            }
+        }
+        let g = Graph::from_edges(r * c, &edges).unwrap();
+        Dfs.find(&g, 0, r * c - 1, &NoControl).unwrap()
+    }
+
+    #[test]
+    fn parallel_gives_the_same_products_as_serial() {
+        for (r, c) in [(3, 8), (3, 9)] {
+            let family = grid_paths(r, c);
+
+            let serial = to_sdp_set(family.sets.clone(), &NoControl).unwrap();
+            let parallel = to_sdp_set_parallel(family.sets.clone(), &NoControl).unwrap();
+
+            assert_eq!(parallel, serial, "{r} x {c}");
+        }
+    }
+
+    #[test]
+    fn parallel_availability_is_bit_identical_and_registered() {
+        let family = grid_paths(3, 9);
+        let p = ProbabilityMap::uniform(27, 0.9);
+        let algo = registry::find_availability("path_sdp_parallel").unwrap();
+
+        let got = algo.prepare(&family, &NoControl).unwrap().evaluate(&p);
+        let want = PathSdp.prepare(&family, &NoControl).unwrap().evaluate(&p);
+
+        assert_eq!(got.to_bits(), want.to_bits());
+        assert_eq!(algo.input(), SetKind::Paths);
+    }
+
+    struct CancelNow;
+    impl Control for CancelNow {
+        fn check(&self) -> Result<(), Cancelled> {
+            Err(Cancelled)
+        }
+    }
+
+    #[test]
+    fn parallel_stops_when_cancelled() {
+        let err = to_sdp_set_parallel(grid_paths(3, 9).sets, &CancelNow).err();
+
+        assert_eq!(err, Some(Error::Cancelled));
     }
 }

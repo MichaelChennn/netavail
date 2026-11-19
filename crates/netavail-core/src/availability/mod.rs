@@ -8,6 +8,8 @@ mod path_sdp;
 pub use cut_disjoint::CutDisjoint;
 pub use path_disjoint::PathDisjoint;
 pub use path_sdp::PathSdp;
+#[cfg(feature = "parallel")]
+pub use path_sdp::PathSdpParallel;
 
 use crate::control::Control;
 use crate::error::Error;
