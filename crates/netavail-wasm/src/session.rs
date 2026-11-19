@@ -138,9 +138,12 @@ impl Session {
     /// Switches topology; computed sets are kept if the graph is unchanged.
     pub fn load(&mut self, topology_json: &str) -> Result<(), String> {
         let topo = Topology::from_json(topology_json).map_err(|e| e.to_string())?;
+        let same = topo.graph().fingerprint() == *self.plain.cache.graph();
         self.plain.replace(topo.graph().clone());
-        if let Some(links) = &mut self.links {
-            links.replace(topo.link_graph());
+        match &mut self.links {
+            // Same nodes and edges give the same link graph, so its cache stays valid
+            Some(links) if same => links.graph = topo.link_graph(),
+            _ => self.links = None,
         }
         self.topo = topo;
         Ok(())
@@ -231,13 +234,18 @@ impl Session {
         kind: WireSetKind,
         links: bool,
     ) -> Result<Sets, String> {
-        if self.layer(links).is_none() {
+        let plan = build_plan(plan)?;
+        let layer = if links {
+            self.links.as_mut()
+        } else {
+            Some(&mut self.plain)
+        };
+        let Some(layer) = layer else {
             return Ok(Sets { sets: None });
-        }
-        let layer = self.layer_mut(links);
+        };
         layer.touch((src, dst));
         let cache = &layer.cache;
-        let keys = build_plan(plan)?.keys(cache.graph(), src, dst);
+        let keys = plan.keys(cache.graph(), src, dst);
         let family = match kind {
             WireSetKind::Paths => cache.paths(&keys.paths),
             WireSetKind::Cuts => keys.cuts.and_then(|k| cache.cuts(&k)),
@@ -272,6 +280,8 @@ impl Session {
         probs: &[Prob],
         link_prob: Option<Prob>,
     ) -> Result<Vec<ProbabilityMap>, String> {
+        let link_prob = link_prob.map(Prob::checked).transpose();
+        let link_prob = link_prob.map_err(|e| e.to_string())?;
         probs
             .iter()
             .map(|&p| self.topo.scenario(p, link_prob).map_err(|e| e.to_string()))
@@ -479,6 +489,11 @@ mod tests {
             s.run_pair(&dfs(), 0, 1, &[Uniform(0.9)], Some(Uniform(-1.0)))
                 .is_err()
         );
+        // A bad link probability is an error even without node scenarios
+        assert!(s.run_pair(&dfs(), 0, 1, &[], Some(Uniform(-1.0))).is_err());
+        assert!(s.reevaluate(&dfs(), &[], Some(Uniform(7.0))).is_err());
+        assert!(s.sets(&plan, 0, 1, WireSetKind::Paths, true).is_err());
+        assert!(s.links.is_none());
         // Link nodes are not valid endpoints
         assert!(s.run_pair(&dfs(), 0, 4, &[], Some(Uniform(0.9))).is_err());
         assert!(Session::new("{}", clock).is_err());
@@ -619,6 +634,10 @@ mod tests {
 
         let again = s.reevaluate(&sdp(), &[Uniform(0.5)], Some(Uniform(1.0)));
         assert_eq!(again.unwrap().reports[0].availability, [0.125]);
+
+        // Another graph drops the link graph until links fail again
+        s.load(SQUARE).unwrap();
+        assert!(s.links.is_none());
     }
 
     /// Path a-b-c with probabilities in the file; links 3 and 4 have their own too.

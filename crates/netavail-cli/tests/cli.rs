@@ -125,6 +125,11 @@ fn run_with_link_prob_lets_links_fail() {
 
     let bad = netavail(&["run", topo, "--link-prob", "1.5"]);
     assert!(!bad.status.success());
+    let stderr = String::from_utf8_lossy(&bad.stderr);
+    assert!(
+        stderr.contains("invalid value '1.5' for '--link-prob"),
+        "{stderr}"
+    );
     let export = netavail(&["run", topo, "--link-prob", "0.8", "--sets-dir", "x"]);
     assert!(!export.status.success());
 }

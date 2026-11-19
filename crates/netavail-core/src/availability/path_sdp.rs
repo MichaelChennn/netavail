@@ -321,23 +321,32 @@ fn path_products(
 const PARALLEL_MIN_PATHS: usize = 200;
 
 /// [`to_sdp_set`] with each path's products computed in parallel, then joined in path order.
-/// The term limit applies per path while running and to the total at the end.
+/// The term limit applies to the products of all threads so far, so it can stop early.
 #[cfg(feature = "parallel")]
 fn to_sdp_set_parallel(path_sets: Vec<NodeSet>, ctl: &dyn Control) -> Result<Vec<SdpSets>, Error> {
     use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
     if path_sets.len() < PARALLEL_MIN_PATHS {
         return to_sdp_set(path_sets, ctl);
     }
     let sorted_path_set = sort_path_set(path_sets);
+    // Products made so far by all threads, so the limit bounds the total
+    let total = AtomicUsize::new(1);
     let per_path = (1..sorted_path_set.len())
         .into_par_iter()
-        .map(|i| path_products(&sorted_path_set, i, 0, ctl))
+        .map(|i| {
+            let products = path_products(&sorted_path_set, i, total.load(Relaxed), ctl)?;
+            check_terms(
+                total.fetch_add(products.len(), Relaxed) + products.len(),
+                ctl,
+            )?;
+            Ok(products)
+        })
         .collect::<Result<Vec<_>, Error>>()?;
 
     let mut final_sdps = vec![vec![Sdp::normal(sorted_path_set[0].clone())]];
     final_sdps.extend(per_path.into_iter().flatten());
-    check_terms(final_sdps.len(), ctl)?;
     Ok(final_sdps)
 }
 
@@ -602,6 +611,32 @@ mod parallel_tests {
         fn check(&self) -> Result<(), Cancelled> {
             Err(Cancelled)
         }
+    }
+
+    /// A term limit, counting the checks to see how much work ran.
+    struct Limit(usize, std::sync::atomic::AtomicUsize);
+    impl Control for Limit {
+        fn check(&self) -> Result<(), Cancelled> {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+        fn max_terms(&self) -> Option<usize> {
+            Some(self.0)
+        }
+    }
+
+    /// No single path exceeds the limit, but the total does; it must stop early.
+    #[test]
+    fn parallel_stops_soon_after_the_total_exceeds_max_terms() {
+        let sorted = sort_path_set(grid_paths(3, 9).sets);
+        let per_path = |i| path_products(&sorted, i, 0, &NoControl).unwrap().len();
+        let max = (1..sorted.len()).map(per_path).max().unwrap();
+        let ctl = Limit(max, Default::default());
+
+        let err = to_sdp_set_parallel(sorted.clone(), &ctl).err();
+
+        assert_eq!(err, Some(Error::TooManyTerms { limit: max }));
+        assert!(ctl.1.into_inner() < sorted.len() / 2);
     }
 
     #[test]

@@ -48,7 +48,17 @@ impl fmt::Display for Prob {
     }
 }
 
-/// Reads `file` or a number; the range is checked by [`Topology::scenario`].
+impl Prob {
+    /// Itself, or an error if it is a p outside [0, 1].
+    pub fn checked(self) -> Result<Prob, Error> {
+        match self {
+            Prob::Uniform(p) if !(0.0..=1.0).contains(&p) => Err(Error::ProbabilityOutOfRange(p)),
+            _ => Ok(self),
+        }
+    }
+}
+
+/// Reads `file` or a number in [0, 1].
 impl FromStr for Prob {
     type Err = String;
 
@@ -58,7 +68,9 @@ impl FromStr for Prob {
         }
         s.parse()
             .map(Prob::Uniform)
-            .map_err(|_| format!("{s:?} is neither a probability nor \"file\""))
+            .map_err(|_| format!("{s:?} is neither a probability nor \"file\""))?
+            .checked()
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -262,9 +274,8 @@ impl Topology {
     /// One scenario: a probability per node, then, if `links` is given, one per edge,
     /// in the order of [`Topology::link_graph`].
     pub fn scenario(&self, nodes: Prob, links: Option<Prob>) -> Result<ProbabilityMap, Error> {
-        let expand = |prob: Prob, file: Vec<f64>| match prob {
-            Prob::Uniform(p) if !(0.0..=1.0).contains(&p) => Err(Error::ProbabilityOutOfRange(p)),
-            Prob::Uniform(p) => Ok(vec![p; file.len()]),
+        let expand = |prob: Prob, file: Vec<f64>| match prob.checked()? {
+            Prob::Uniform(p) => Ok::<_, Error>(vec![p; file.len()]),
             Prob::File => Ok(file),
         };
         let mut probs = expand(nodes, self.nodes.iter().map(|n| n.prob).collect())?;
@@ -288,6 +299,14 @@ impl Topology {
 mod tests {
     use super::*;
     use netavail_core::types::Lit;
+
+    #[test]
+    fn prob_parses_file_and_probabilities_in_range_only() {
+        assert_eq!("file".parse(), Ok(Prob::File));
+        assert_eq!("0.9".parse(), Ok(Prob::Uniform(0.9)));
+        assert!("1.5".parse::<Prob>().unwrap_err().contains("[0, 1]"));
+        assert!("high".parse::<Prob>().is_err());
+    }
 
     #[test]
     fn maps_string_ids_in_order_of_appearance() {
