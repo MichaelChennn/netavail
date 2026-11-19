@@ -1,6 +1,6 @@
 // Demo page (D32): pick a topology and algorithms, run every pair on a Worker pool, show a table.
 import { Cancelled, Pool, type Pair } from "./pool";
-import type { AlgorithmInfo, PairReport, PlanSpec, TopologyView } from "./pkg/netavail_wasm";
+import type { AlgorithmInfo, PairReport, PlanSpec, Prob, TopologyView } from "./pkg/netavail_wasm";
 
 type Entry = { file: string; name: string; nodes: number; edges: number; reference: boolean };
 
@@ -38,8 +38,8 @@ const pool = new Pool(() => new Worker(new URL("./worker.ts", import.meta.url), 
 let topo: TopologyView | null = null;
 let reports: PairReport[] = [];
 let shownPlan: PlanSpec | null = null;
-let shownProbs: number[] = [];
-let shownLinkProb: number | undefined;
+let shownProbs: Prob[] = [];
+let shownLinkProb: Prob | undefined;
 let running = false;
 
 // Nodes n + i of the link graph are edge i, shown as u–v
@@ -63,20 +63,21 @@ function plan(): PlanSpec {
   return spec;
 }
 
-function parseProbs(): number[] {
-  const parts = ui.probs.value.split(/[\s,]+/).filter(Boolean);
-  const probs = parts.map(Number);
-  const bad = parts.find((_, i) => !(probs[i] >= 0 && probs[i] <= 1));
-  if (bad !== undefined) throw new Error(`p = ${bad} is not a number in [0, 1]`);
-  return probs;
+// A number in [0, 1], or "file" for each node's (or link's) own prob in the topology
+function parseProb(text: string, what: string): Prob {
+  if (text === "file") return "file";
+  const p = Number(text);
+  if (!(p >= 0 && p <= 1)) throw new Error(`${what} ${text} is neither a number in [0, 1] nor "file"`);
+  return p;
 }
 
-function parseLinkProb(): number | undefined {
+function parseProbs(): Prob[] {
+  return ui.probs.value.split(/[\s,]+/).filter(Boolean).map((t) => parseProb(t, "p ="));
+}
+
+function parseLinkProb(): Prob | undefined {
   const text = ui.linkProb.value.trim();
-  if (text === "") return undefined;
-  const q = Number(text);
-  if (!(q >= 0 && q <= 1)) throw new Error(`link availability ${text} is not a number in [0, 1]`);
-  return q;
+  return text === "" ? undefined : parseProb(text, "link availability");
 }
 
 // Every link becomes a node, so cut sets grow quickly
@@ -114,8 +115,8 @@ async function openBuiltIn(file: string) {
 
 async function runAll() {
   if (!topo) return;
-  let probs: number[];
-  let linkProb: number | undefined;
+  let probs: Prob[];
+  let linkProb: Prob | undefined;
   try {
     probs = parseProbs();
     linkProb = parseLinkProb();

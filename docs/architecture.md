@@ -239,10 +239,11 @@ core 只负责算出 key，缓存存在哪里由适配层决定。
 ```
 拓扑 JSON ──解析──► Topology (io)：name、nodes、edges，包括坐标、label、链路概率
                       ├─ .graph()         ──► Graph (core)
-                      └─ .probabilities() ──► ProbabilityMap (core)
+                      └─ .scenario(nodes, links) ──► ProbabilityMap (core)
 ```
 
 - 字符串 id 按出现顺序映射成 0…n-1。`version` 字段可选。
+- 场景（`Prob`）：一个数 p（所有节点或所有链路都取 p），或者 `file`（每个节点、每条边用文件里自己的 prob）。`scenario(nodes, links)` 先给出 n 个节点的概率；给了 `links` 时，后面再接每条边的概率，顺序和链路图里的节点编号一致。
 - 模块：`topology`（拓扑读写）、`results`（结果 CSV、集合导出 + `meta.json`）、`reference`（解析旧参考答案 CSV，规范化后对拍）。
 - 导出集合时附带图指纹，导入时比对。旧的参考答案 CSV 没有指纹，导入时改做合法性检查。
 - 不使用数据库，只保存拓扑，不保存计算结果。
@@ -266,8 +267,8 @@ netavail-wasm::Engine ─► netavail-io ─► netavail-core
 | `load(topology)` | 换拓扑；图指纹没变就保留缓存 |
 | `topology()` | 节点（含 label、坐标）、边、图指纹 |
 | `algorithms()` | 读注册表 |
-| `runPair(plan, src, dst, probs, linkProb?)` | 计算一对，结果写入缓存，返回 `PairReport`（`PairResult` + 各阶段耗时）；每个 p 是一个场景；给 `linkProb` 时链路也会故障（D38） |
-| `reevaluate(plan, probs, linkProb?)` | 对已缓存的节点对只重新 evaluate |
+| `runPair(plan, src, dst, probs, linkProb?)` | 计算一对，结果写入缓存，返回 `PairReport`（`PairResult` + 各阶段耗时）；`probs` 的每一项是一个场景，取值是数字或 `"file"`；给 `linkProb`（数字或 `"file"`）时链路也会故障（D38） |
+| `reevaluate(plan, probs, linkProb?)` | 对已缓存的节点对只重新 evaluate；改了文件里的概率后重新 `load`，图指纹不变，可以直接重新 evaluate |
 | `sets(plan, src, dst, kind, links)` | 从缓存取集合；`links` 选链路图的缓存 |
 
 - Plan 里写算法 id 字符串，由 Rust 在注册表里查找。Worker 消息和 `Engine` 的方法一一对应。
@@ -295,11 +296,11 @@ web/
 ```
 netavail algorithms
 netavail run <topology.json> --paths dfs [--cuts ID] [--avail ID] --p 0.9,0.99,0.999,0.9999
-             [--threads N] [--out results.csv] [--sets-dir DIR]
+             [--link-prob Q|file] [--threads N] [--out results.csv] [--sets-dir DIR]
 netavail verify <topology.json> <参考答案目录>
 ```
 
-`run` 输出的 CSV 包含每对、每个阶段的耗时。正式的性能测试用 criterion；浏览器里测到的时间只适合在同一台机器上比较算法之间的相对快慢。
+`--p` 里的每一项是一个场景，写 `file` 表示每个节点用拓扑文件里自己的 prob；结果 CSV 里对应的列叫 `file Availability`。`run` 输出的 CSV 包含每对、每个阶段的耗时。正式的性能测试用 criterion；浏览器里测到的时间只适合在同一台机器上比较算法之间的相对快慢。
 
 ## 7. 测试（D9、D34）
 
@@ -347,6 +348,7 @@ pages.yml（push 到 main）
 | 3 | `netavail-wasm` + demo 页面 + 部署到 Pages；`netavail-cli`；criterion 性能对比 | 线上 demo 结果与参考答案一致；速度不慢于 C++ ✅ |
 | 4 | 其余割集算法、`path_disjoint`、`path_sdp`、链路故障（`to_link_graph`） | 全部参考答案对上 |
 | 5 | 5a core `run_all` 接 rayon + CLI `--threads` ✅；5b 浏览器 Worker 池（动态分配节点对、按 Worker 路由重算、缓存 LRU 上限、取消时给正在算的 Worker 1 秒宽限）✅；5c 正式界面原型、5d 按原型实现正式界面：等用户设计界面后再做（D39） | 并行结果与串行一致，报告 Austria_24、Sweden 全部节点对的加速比 ✅；N 个 Worker 与 1 个结果一致，取消后已算完节点对的缓存保留 ✅；正式界面按确认的原型实现，线上 8 个小拓扑与参考答案一致，CI 和 Pages 全绿 |
+| 6 | 剩余后端：节点和链路可以用拓扑文件里的概率（`file` 场景）；`Topology` 写出 JSON；链路图的 `Layer` 第一次用到时才建；`path_sdp_parallel`（只在 CLI 中有） | 统一的 p 和全部写同一个 p 的 file 场景结果逐位相同；写出再读回的拓扑和原来一致；`path_sdp_parallel` 和 `path_sdp` 结果逐位相同；CI 和 Pages 全绿 |
 | 以后 | `netavail-py`、桌面版 | 待定 |
 
 ## 10. 待定问题

@@ -11,7 +11,8 @@ use wasm_bindgen::prelude::*;
 
 use session::Session;
 use wire::{
-    AlgorithmList, PairReport, PairReports, PlanSpec, SetKind as WireSetKind, Sets, TopologyView,
+    AlgorithmList, PairReport, PairReports, PlanSpec, Prob, SetKind as WireSetKind, Sets,
+    TopologyView,
 };
 
 #[wasm_bindgen]
@@ -49,17 +50,18 @@ impl Engine {
         Ok(session::algorithms().into_ts()?)
     }
 
-    /// One pair, every node at availability `p` for each entry of `probs`;
-    /// with `link_prob`, every link can fail too (edge `i` is node `n + i`).
+    /// One pair, one scenario per entry of `probs`: a p for every node, or `"file"`
+    /// for each node's own prob; with `link_prob`, links can fail too (edge `i` is node `n + i`).
     #[wasm_bindgen(js_name = runPair)]
     pub fn run_pair(
         &mut self,
         plan: Ts<PlanSpec>,
         src: u32,
         dst: u32,
-        probs: Vec<f64>,
-        link_prob: Option<f64>,
+        probs: Vec<Ts<Prob>>,
+        link_prob: Option<Ts<Prob>>,
     ) -> Result<Ts<PairReport>, JsError> {
+        let (probs, link_prob) = scenarios(probs, link_prob)?;
         let report = self
             .session
             .run_pair(&plan.to_rust()?, src, dst, &probs, link_prob)
@@ -72,9 +74,10 @@ impl Engine {
     pub fn reevaluate(
         &mut self,
         plan: Ts<PlanSpec>,
-        probs: Vec<f64>,
-        link_prob: Option<f64>,
+        probs: Vec<Ts<Prob>>,
+        link_prob: Option<Ts<Prob>>,
     ) -> Result<Ts<PairReports>, JsError> {
+        let (probs, link_prob) = scenarios(probs, link_prob)?;
         let reports = self
             .session
             .reevaluate(&plan.to_rust()?, &probs, link_prob)
@@ -97,6 +100,14 @@ impl Engine {
             .map_err(err)?;
         Ok(sets.into_ts()?)
     }
+}
+
+type Scenarios = (Vec<netavail_io::Prob>, Option<netavail_io::Prob>);
+
+fn scenarios(probs: Vec<Ts<Prob>>, link_prob: Option<Ts<Prob>>) -> Result<Scenarios, JsError> {
+    let read = |p: Ts<Prob>| p.to_rust().map(netavail_io::Prob::from);
+    let probs = probs.into_iter().map(read).collect::<Result<_, _>>()?;
+    Ok((probs, link_prob.map(read).transpose()?))
 }
 
 fn err(message: String) -> JsError {

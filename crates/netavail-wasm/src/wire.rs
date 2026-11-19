@@ -16,6 +16,31 @@ pub struct PlanSpec {
     pub availability: Option<String>,
 }
 
+/// A p for every node (or link), or `"file"` for each one's own prob in the topology.
+#[derive(Tsify, Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(untagged)]
+#[tsify(type = "number | \"file\"")]
+pub enum Prob {
+    Uniform(f64),
+    File(FileTag),
+}
+
+/// The string `"file"`.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum FileTag {
+    File,
+}
+
+impl From<Prob> for netavail_io::Prob {
+    fn from(p: Prob) -> netavail_io::Prob {
+        match p {
+            Prob::Uniform(p) => netavail_io::Prob::Uniform(p),
+            Prob::File(FileTag::File) => netavail_io::Prob::File,
+        }
+    }
+}
+
 #[derive(Tsify, Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum AlgoKind {

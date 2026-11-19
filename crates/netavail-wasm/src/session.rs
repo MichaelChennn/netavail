@@ -6,8 +6,8 @@ use netavail_core::control::Cancelled;
 use netavail_core::registry::{self, AlgoInfo};
 use netavail_core::types::{NodeId, SetKind};
 use netavail_core::{Cache, Control, Graph, PairResult, Plan, ProbabilityMap, run_pair_cached};
-use netavail_io::Topology;
 use netavail_io::results::{StageTimer, hex};
+use netavail_io::{Prob, Topology};
 
 use crate::wire::{
     AlgoKind, AlgorithmInfo, AlgorithmList, NodeView, PairReport, PairReports, PlanSpec,
@@ -167,15 +167,14 @@ impl Session {
         }
     }
 
-    /// Runs one pair with every node at availability `p`, one scenario per entry of `probs`,
-    /// and every link at `link_prob` if given.
+    /// Runs one pair, one scenario per entry of `probs`; with `link_prob`, links can fail too.
     pub fn run_pair(
         &mut self,
         plan: &PlanSpec,
         src: NodeId,
         dst: NodeId,
-        probs: &[f64],
-        link_prob: Option<f64>,
+        probs: &[Prob],
+        link_prob: Option<Prob>,
     ) -> Result<PairReport, String> {
         let plan = build_plan(plan)?;
         let n = self.topo.graph().node_count();
@@ -197,8 +196,8 @@ impl Session {
     pub fn reevaluate(
         &mut self,
         plan: &PlanSpec,
-        probs: &[f64],
-        link_prob: Option<f64>,
+        probs: &[Prob],
+        link_prob: Option<Prob>,
     ) -> Result<PairReports, String> {
         let plan = build_plan(plan)?;
         let scenarios = self.scenarios(probs, link_prob)?;
@@ -255,25 +254,13 @@ impl Session {
     /// Node probabilities first, then one per edge if links can fail.
     fn scenarios(
         &self,
-        probs: &[f64],
-        link_prob: Option<f64>,
+        probs: &[Prob],
+        link_prob: Option<Prob>,
     ) -> Result<Vec<ProbabilityMap>, String> {
-        if let Some(p) = probs
+        probs
             .iter()
-            .chain(&link_prob)
-            .find(|p| !(0.0..=1.0).contains(*p))
-        {
-            return Err(format!("probability {p} is not in [0, 1]"));
-        }
-        let n = self.topo.graph().node_count() as usize;
-        let links = match link_prob {
-            Some(q) => vec![q; self.topo.edges().len()],
-            None => Vec::new(),
-        };
-        Ok(probs
-            .iter()
-            .map(|&p| ProbabilityMap::from_nodes(&[vec![p; n], links.clone()].concat()))
-            .collect())
+            .map(|&p| self.topo.scenario(p, link_prob).map_err(|e| e.to_string()))
+            .collect()
     }
 
     fn run(
@@ -374,6 +361,7 @@ pub fn algorithms() -> AlgorithmList {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use netavail_io::Prob::{File, Uniform};
 
     /// Cycle a-b-d-c-a: two minimal paths from a to d.
     const SQUARE: &str = r#"{"name": "sq", "nodes": [{"id": "a"}, {"id": "b"}, {"id": "c"}, {"id": "d"}],
@@ -471,10 +459,13 @@ mod tests {
         );
         assert!(s.run_pair(&dfs(), 0, 4, &[], None).is_err());
         assert!(s.run_pair(&dfs(), 1, 1, &[], None).is_err());
-        assert!(s.run_pair(&dfs(), 0, 1, &[1.5], None).is_err());
-        assert!(s.run_pair(&dfs(), 0, 1, &[0.9], Some(-1.0)).is_err());
+        assert!(s.run_pair(&dfs(), 0, 1, &[Uniform(1.5)], None).is_err());
+        assert!(
+            s.run_pair(&dfs(), 0, 1, &[Uniform(0.9)], Some(Uniform(-1.0)))
+                .is_err()
+        );
         // Link nodes are not valid endpoints
-        assert!(s.run_pair(&dfs(), 0, 4, &[], Some(0.9)).is_err());
+        assert!(s.run_pair(&dfs(), 0, 4, &[], Some(Uniform(0.9))).is_err());
         assert!(Session::new("{}", clock).is_err());
     }
 
@@ -486,7 +477,7 @@ mod tests {
             ..dfs()
         };
 
-        let err = s.run_pair(&plan, 0, 1, &[0.9], None).unwrap_err();
+        let err = s.run_pair(&plan, 0, 1, &[Uniform(0.9)], None).unwrap_err();
 
         assert!(err.contains("cut"), "{err}");
     }
@@ -570,7 +561,9 @@ mod tests {
             ..dfs()
         };
 
-        let r = s.run_pair(&plan, 0, 2, &[0.9], Some(0.8)).unwrap();
+        let r = s
+            .run_pair(&plan, 0, 2, &[Uniform(0.9)], Some(Uniform(0.8)))
+            .unwrap();
 
         assert!((r.availability[0] - 0.9f64.powi(3) * 0.8f64.powi(2)).abs() < 1e-12);
         let sets = s.sets(&plan, 0, 2, WireSetKind::Paths, true).unwrap();
@@ -580,12 +573,53 @@ mod tests {
             None
         );
         assert!(
-            s.reevaluate(&plan, &[0.9], None)
+            s.reevaluate(&plan, &[Uniform(0.9)], None)
                 .unwrap()
                 .reports
                 .is_empty()
         );
-        let again = s.reevaluate(&plan, &[0.5], Some(1.0)).unwrap().reports;
+        let again = s
+            .reevaluate(&plan, &[Uniform(0.5)], Some(Uniform(1.0)))
+            .unwrap()
+            .reports;
         assert_eq!(again[0].availability, [0.125]);
+    }
+
+    /// Path a-b-c with probabilities in the file; links 3 and 4 have their own too.
+    const PATH_PROBS: &str = r#"{"nodes": [{"id": "a", "prob": 0.5}, {"id": "b"}, {"id": "c", "prob": 0.25}],
+        "edges": [{"source": "a", "target": "b", "prob": 0.8},
+                  {"source": "b", "target": "c", "prob": 0.6}]}"#;
+
+    fn sdp() -> PlanSpec {
+        PlanSpec {
+            availability: Some("path_sdp".into()),
+            ..dfs()
+        }
+    }
+
+    #[test]
+    fn file_scenario_uses_each_node_and_link_probability() {
+        let mut s = Session::new(PATH_PROBS, clock).unwrap();
+
+        let nodes = s
+            .run_pair(&sdp(), 0, 2, &[File, Uniform(0.9)], None)
+            .unwrap();
+        let links = s.run_pair(&sdp(), 0, 2, &[File], Some(File)).unwrap();
+
+        assert_eq!(nodes.availability, [0.125, 0.9f64.powi(3)]);
+        assert!((links.availability[0] - 0.125 * 0.8 * 0.6).abs() < 1e-12);
+    }
+
+    /// Editing probabilities leaves the graph alone, so the sets stay cached.
+    #[test]
+    fn loading_new_probabilities_keeps_the_cache() {
+        let mut s = Session::new(PATH_PROBS, clock).unwrap();
+        s.run_pair(&sdp(), 0, 2, &[File], None).unwrap();
+
+        s.load(&PATH_PROBS.replace("0.25", "0.75")).unwrap();
+        let again = s.reevaluate(&sdp(), &[File], None).unwrap().reports;
+
+        assert_eq!(again[0].availability, [0.375]);
+        assert_eq!(again[0].times.paths_ms, None);
     }
 }

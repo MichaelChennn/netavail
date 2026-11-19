@@ -1,6 +1,8 @@
 //! Topology JSON in the PyRBD-Suite frontend format (architecture.md §4; D24).
 
 use std::collections::HashMap;
+use std::fmt;
+use std::str::FromStr;
 
 use netavail_core::transform::to_link_graph;
 use netavail_core::types::NodeId;
@@ -21,8 +23,43 @@ pub enum Error {
     InvalidProbability { node: String, prob: f64 },
     #[error("edge {edge}: probability {prob} is not in [0, 1]")]
     InvalidLinkProbability { edge: usize, prob: f64 },
+    #[error("probability {0} is not in [0, 1]")]
+    ProbabilityOutOfRange(f64),
     #[error(transparent)]
     Graph(#[from] netavail_core::Error),
+}
+
+/// Where a scenario's availabilities come from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Prob {
+    /// Every node (or every link) has availability p.
+    Uniform(f64),
+    /// Each node (or link) has the `prob` given in the topology file.
+    File,
+}
+
+/// `file`, or the number itself; also the CSV column name.
+impl fmt::Display for Prob {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Prob::Uniform(p) => write!(f, "{p}"),
+            Prob::File => f.write_str("file"),
+        }
+    }
+}
+
+/// Reads `file` or a number; the range is checked by [`Topology::scenario`].
+impl FromStr for Prob {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Prob, String> {
+        if s == "file" {
+            return Ok(Prob::File);
+        }
+        s.parse()
+            .map(Prob::Uniform)
+            .map_err(|_| format!("{s:?} is neither a probability nor \"file\""))
+    }
 }
 
 /// A node as given in the file. `prob` is its availability.
@@ -165,10 +202,19 @@ impl Topology {
         &self.graph
     }
 
-    /// Per-node availabilities from the file.
-    pub fn probabilities(&self) -> ProbabilityMap {
-        let probs: Vec<f64> = self.nodes.iter().map(|n| n.prob).collect();
-        ProbabilityMap::from_nodes(&probs)
+    /// One scenario: a probability per node, then, if `links` is given, one per edge,
+    /// in the order of [`Topology::link_graph`].
+    pub fn scenario(&self, nodes: Prob, links: Option<Prob>) -> Result<ProbabilityMap, Error> {
+        let expand = |prob: Prob, file: Vec<f64>| match prob {
+            Prob::Uniform(p) if !(0.0..=1.0).contains(&p) => Err(Error::ProbabilityOutOfRange(p)),
+            Prob::Uniform(p) => Ok(vec![p; file.len()]),
+            Prob::File => Ok(file),
+        };
+        let mut probs = expand(nodes, self.nodes.iter().map(|n| n.prob).collect())?;
+        if let Some(links) = links {
+            probs.extend(expand(links, self.edges.iter().map(|e| e.prob).collect())?);
+        }
+        Ok(ProbabilityMap::from_nodes(&probs))
     }
 
     /// The graph with every edge turned into a node, so links can fail (D18).
@@ -354,19 +400,87 @@ mod tests {
         );
     }
 
-    #[test]
-    fn probabilities_follow_node_order() {
-        let t = Topology::from_json(
+    /// Path x-y-z with its own probabilities on every node and edge.
+    fn with_probs() -> Topology {
+        Topology::from_json(
             r#"{"nodes": [{"id": "x", "prob": 0.7}, {"id": "y"}, {"id": "z", "prob": 0.25}],
-                "edges": []}"#,
+                "edges": [{"source": "x", "target": "y", "prob": 0.5},
+                          {"source": "y", "target": "z"}]}"#,
+        )
+        .unwrap()
+    }
+
+    fn ups(p: &ProbabilityMap) -> Vec<f64> {
+        (0..p.node_count() as u32)
+            .map(|i| p.get(Lit::up(i)))
+            .collect()
+    }
+
+    #[test]
+    fn file_scenario_follows_node_order() {
+        let p = with_probs().scenario(Prob::File, None).unwrap();
+
+        assert_eq!(ups(&p), [0.7, 1.0, 0.25]);
+        assert_eq!(p.get(Lit::down(2)), 0.75);
+    }
+
+    #[test]
+    fn uniform_scenario_gives_every_node_p() {
+        let p = with_probs().scenario(Prob::Uniform(0.9), None).unwrap();
+
+        assert_eq!(p, ProbabilityMap::uniform(3, 0.9));
+    }
+
+    /// Edge i is node n + i of the link graph, so its probability comes after the nodes.
+    #[test]
+    fn link_probabilities_follow_the_nodes() {
+        let t = with_probs();
+
+        let uniform = t.scenario(Prob::File, Some(Prob::Uniform(0.99))).unwrap();
+        let file = t.scenario(Prob::Uniform(0.9), Some(Prob::File)).unwrap();
+
+        assert_eq!(ups(&uniform), [0.7, 1.0, 0.25, 0.99, 0.99]);
+        assert_eq!(ups(&file), [0.9, 0.9, 0.9, 0.5, 1.0]);
+    }
+
+    /// The same p written into the file gives bit-identical probabilities.
+    #[test]
+    fn file_with_one_p_everywhere_equals_uniform() {
+        let t = Topology::from_json(
+            r#"{"nodes": [{"id": "a", "prob": 0.9}, {"id": "b", "prob": 0.9}],
+                "edges": [{"source": "a", "target": "b", "prob": 0.9}]}"#,
         )
         .unwrap();
 
-        let p = t.probabilities();
+        assert_eq!(
+            t.scenario(Prob::File, Some(Prob::File)).unwrap(),
+            t.scenario(Prob::Uniform(0.9), Some(Prob::Uniform(0.9)))
+                .unwrap()
+        );
+    }
 
-        assert_eq!(p.get(Lit::up(0)), 0.7);
-        assert_eq!(p.get(Lit::up(1)), 1.0);
-        assert_eq!(p.get(Lit::up(2)), 0.25);
-        assert_eq!(p.get(Lit::down(2)), 0.75);
+    #[test]
+    fn rejects_uniform_probability_outside_unit_interval() {
+        let t = with_probs();
+
+        for (nodes, links) in [
+            (Prob::Uniform(1.5), None),
+            (Prob::File, Some(Prob::Uniform(-0.1))),
+            (Prob::Uniform(f64::NAN), None),
+        ] {
+            let err = t.scenario(nodes, links).unwrap_err();
+            assert!(matches!(err, Error::ProbabilityOutOfRange(_)), "{err:?}");
+        }
+    }
+
+    #[test]
+    fn prob_reads_and_writes_a_number_or_file() {
+        assert_eq!("file".parse::<Prob>(), Ok(Prob::File));
+        assert_eq!("0.99".parse::<Prob>(), Ok(Prob::Uniform(0.99)));
+        assert!("high".parse::<Prob>().is_err());
+
+        assert_eq!(Prob::File.to_string(), "file");
+        assert_eq!(Prob::Uniform(0.9).to_string(), "0.9");
+        assert_eq!(Prob::Uniform(1.0).to_string(), "1");
     }
 }

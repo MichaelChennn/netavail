@@ -6,4 +6,4 @@ pub mod reference;
 pub mod results;
 pub mod topology;
 
-pub use topology::Topology;
+pub use topology::{Prob, Topology};

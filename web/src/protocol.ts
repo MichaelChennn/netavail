@@ -4,6 +4,7 @@ import type {
   PairReport,
   PairReports,
   PlanSpec,
+  Prob,
   SetKind,
   Sets,
   TopologyView,
@@ -15,10 +16,10 @@ export type Methods = {
   algorithms: { args: Record<string, never>; result: AlgorithmList };
   runPair: {
     // linkProb set: every link can fail too; edge i is node n + i
-    args: { plan: PlanSpec; src: number; dst: number; probs: number[]; linkProb?: number };
+    args: { plan: PlanSpec; src: number; dst: number; probs: Prob[]; linkProb?: Prob };
     result: PairReport;
   };
-  reevaluate: { args: { plan: PlanSpec; probs: number[]; linkProb?: number }; result: PairReports };
+  reevaluate: { args: { plan: PlanSpec; probs: Prob[]; linkProb?: Prob }; result: PairReports };
   sets: {
     args: { plan: PlanSpec; src: number; dst: number; kind: SetKind; links: boolean };
     result: Sets;

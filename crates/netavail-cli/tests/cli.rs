@@ -129,6 +129,53 @@ fn run_with_link_prob_lets_links_fail() {
     assert!(!export.status.success());
 }
 
+/// Path a-b-c whose nodes and links carry their own probabilities in the file.
+#[test]
+fn run_with_file_uses_each_node_and_link_probability() {
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("run_file");
+    std::fs::create_dir_all(&tmp).unwrap();
+    let topo = tmp.join("path.json");
+    std::fs::write(
+        &topo,
+        r#"{"nodes": [{"id": "a", "prob": 0.5}, {"id": "b"}, {"id": "c", "prob": 0.25}],
+            "edges": [{"source": "a", "target": "b", "prob": 0.8},
+                      {"source": "b", "target": "c", "prob": 0.6}]}"#,
+    )
+    .unwrap();
+    let topo = topo.to_str().unwrap();
+
+    let out = netavail(&[
+        "run",
+        topo,
+        "--avail",
+        "path_sdp",
+        "--p",
+        "0.9,file",
+        "--link-prob",
+        "file",
+    ]);
+
+    assert!(out.status.success());
+    let csv = stdout(&out);
+    let mut lines = csv.lines();
+    let header = lines.next().unwrap();
+    assert!(
+        header.contains(",0.9 Availability,file Availability,"),
+        "{header}"
+    );
+    let a_to_c: Vec<f64> = lines.nth(1).unwrap().split(',').collect::<Vec<_>>()[4..6]
+        .iter()
+        .map(|v| v.parse().unwrap())
+        .collect();
+    let expected = [0.9f64.powi(3) * 0.8 * 0.6, 0.5 * 0.25 * 0.8 * 0.6];
+    for (got, want) in a_to_c.iter().zip(expected) {
+        assert!((got - want).abs() < 1e-12, "{got} vs {want}");
+    }
+
+    let bad = netavail(&["run", topo, "--p", "high"]);
+    assert!(!bad.status.success());
+}
+
 /// Links that never fail give the same availabilities as no link failures.
 #[test]
 fn run_with_perfect_links_matches_run_without_links() {

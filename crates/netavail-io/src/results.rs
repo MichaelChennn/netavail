@@ -10,6 +10,8 @@ use netavail_core::types::{NodeId, SetFamily, SetKind};
 use netavail_core::{Control, PairResult};
 use serde::Serialize;
 
+use crate::topology::Prob;
+
 /// Milliseconds spent in each stage; `None` if the stage did not run (not chosen or cached).
 #[derive(Clone, Copy, Default, PartialEq, Debug, Serialize)]
 pub struct StageTimes {
@@ -86,10 +88,11 @@ impl Control for StageTimer<'_> {
     }
 }
 
-/// One row per pair: counts, one availability column per p, stage times in ms, error.
+/// One row per pair: counts, one availability column per scenario, stage times in ms, error.
 ///
-/// Availability columns are named like the reference answers (`0.9 Availability`).
-pub fn results_csv(probs: &[f64], reports: &[PairReport]) -> String {
+/// Availability columns are named like the reference answers (`0.9 Availability`);
+/// a scenario from the file's probabilities is `file Availability`.
+pub fn results_csv(probs: &[Prob], reports: &[PairReport]) -> String {
     let mut out = String::from("source,target,paths,cuts");
     for p in probs {
         write!(out, ",{p} Availability").unwrap();
@@ -269,11 +272,11 @@ mod tests {
             times: StageTimes::default(),
         };
 
-        let csv = results_csv(&[0.9, 0.99], &[ok, failed]);
+        let csv = results_csv(&[Prob::Uniform(0.9), Prob::File], &[ok, failed]);
 
         assert_eq!(
             csv,
-            "source,target,paths,cuts,0.9 Availability,0.99 Availability,\
+            "source,target,paths,cuts,0.9 Availability,file Availability,\
              paths_ms,cuts_ms,prepare_ms,evaluate_ms,error\n\
              0,2,1,3,0.125,0.5,1.500,0.250,,0.001,\n\
              1,2,4,,,,,,,,\"scenario 1 has probabilities for 2 nodes, the graph has 3\"\n"

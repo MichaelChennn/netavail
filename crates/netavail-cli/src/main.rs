@@ -13,11 +13,11 @@ use netavail_core::graph::Fingerprint;
 use netavail_core::registry::{self, AlgoInfo};
 use netavail_core::types::{SetFamily, SetKind};
 use netavail_core::{Cache, Control, Plan, all_pairs, map_pairs, run_pair_cached};
-use netavail_io::Topology;
 use netavail_io::reference::{
     check_availability, check_cuts, check_paths, read_availability, read_sets, validate_sets,
 };
 use netavail_io::results::{AlgoMeta, Meta, PairReport, StageTimer, hex, results_csv, sets_csv};
+use netavail_io::{Prob, Topology};
 
 #[derive(Parser)]
 #[command(
@@ -47,13 +47,15 @@ enum Command {
         /// Availability algorithm id.
         #[arg(long)]
         avail: Option<String>,
-        /// Node availabilities, one scenario each; every node gets the same p.
+        /// Node availabilities, one scenario each: a p for every node,
+        /// or `file` for each node's own prob in the topology.
         #[arg(long, value_delimiter = ',', default_value = "0.9,0.99,0.999,0.9999")]
-        p: Vec<f64>,
-        /// Link availability, the same for every link; links never fail if omitted.
+        p: Vec<Prob>,
+        /// Link availability for every scenario: a p for every link, or `file` for each
+        /// edge's own prob; links never fail if omitted.
         /// Sets of the link graph cannot be exported yet, so this excludes --sets-dir.
         #[arg(long, conflicts_with = "sets_dir")]
-        link_prob: Option<f64>,
+        link_prob: Option<Prob>,
         /// Result CSV; standard output if omitted.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -180,8 +182,8 @@ fn run(
     paths: &str,
     cuts: Option<String>,
     avail: Option<String>,
-    probs: &[f64],
-    link_prob: Option<f64>,
+    probs: &[Prob],
+    link_prob: Option<Prob>,
     out: Option<PathBuf>,
     sets_dir: Option<PathBuf>,
 ) -> Result<()> {
@@ -197,34 +199,27 @@ fn run(
         }
         None => None,
     };
-    if let Some(&p) = probs.iter().find(|p| !(0.0..=1.0).contains(*p)) {
-        bail!("--p {p} is not in [0, 1]");
-    }
-    if let Some(q) = link_prob.filter(|q| !(0.0..=1.0).contains(q)) {
-        bail!("--link-prob {q} is not in [0, 1]");
-    }
     let plan = Plan::new(path_algo, cut_algo, avail_algo)?;
-    let n = topo.graph().node_count() as usize;
-    // With link failures, edge i is node n + i of the link graph and has availability q
+    let n = topo.graph().node_count();
+    // With link failures, edge i is node n + i of the link graph
     let link_graph;
-    let (g, link_probs) = match link_prob {
-        Some(q) => {
+    let g = match link_prob {
+        Some(_) => {
             link_graph = topo.link_graph();
-            (&link_graph, vec![q; topo.edges().len()])
+            &link_graph
         }
-        None => (topo.graph(), Vec::new()),
+        None => topo.graph(),
     };
-    let scenarios: Vec<_> = probs
+    let scenarios = probs
         .iter()
-        .map(|&p| {
-            netavail_core::ProbabilityMap::from_nodes(&[vec![p; n], link_probs.clone()].concat())
-        })
-        .collect();
+        .map(|&p| topo.scenario(p, link_prob))
+        .collect::<Result<Vec<_>, _>>()
+        .context("--p or --link-prob")?;
     ctrlc::set_handler(|| CANCELLED.store(true, Ordering::Relaxed))
         .context("installing the Ctrl-C handler")?;
 
     // Pairs are original nodes only; link nodes are never a source or destination
-    let pairs = all_pairs(n as u32);
+    let pairs = all_pairs(n);
     let fingerprint = g.fingerprint();
     let started = clock();
     let outputs = map_pairs(&pairs, &CtrlC, |src, dst| {

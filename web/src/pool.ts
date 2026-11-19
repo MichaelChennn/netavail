@@ -1,7 +1,7 @@
 // Worker pool (D17, D30): pairs go to whichever Worker is free, and a pair goes back
 // to the Worker that ran it, whose cache holds its sets.
 import type { Method, Methods, Reply, Request } from "./protocol";
-import type { PairReport, PlanSpec, SetKind, Sets, TopologyView } from "./pkg/netavail_wasm";
+import type { PairReport, PlanSpec, Prob, SetKind, Sets, TopologyView } from "./pkg/netavail_wasm";
 
 /// The part of a Worker the pool uses; tests pass fakes.
 export interface Port {
@@ -13,7 +13,7 @@ export interface Port {
 export class Cancelled extends Error {}
 
 export type Pair = [number, number];
-export type RunArgs = { plan: PlanSpec; probs: number[]; linkProb?: number };
+export type RunArgs = { plan: PlanSpec; probs: Prob[]; linkProb?: Prob };
 
 /// How long `cancel()` lets a busy Worker finish its pair before terminating it.
 export const GRACE_MS = 1000;
