@@ -350,7 +350,7 @@ pages.yml（push 到 main）
 | 3 | `netavail-wasm` + demo 页面 + 部署到 Pages；`netavail-cli`；criterion 性能对比 | 线上 demo 结果与参考答案一致；速度不慢于 C++ ✅ |
 | 4 | 其余割集算法、`path_disjoint`、`path_sdp`、链路故障（`to_link_graph`） | 全部参考答案对上 |
 | 5 | 5a core `run_all` 接 rayon + CLI `--threads` ✅；5b 浏览器 Worker 池（动态分配节点对、按 Worker 路由重算、缓存 LRU 上限、取消时给正在算的 Worker 1 秒宽限）✅；5c 正式界面原型、5d 按原型实现正式界面：等用户设计界面后再做（D39） | 并行结果与串行一致，报告 Austria_24、Sweden 全部节点对的加速比 ✅；N 个 Worker 与 1 个结果一致，取消后已算完节点对的缓存保留 ✅；正式界面按确认的原型实现，线上 8 个小拓扑与参考答案一致，CI 和 Pages 全绿 |
-| 6 | 剩余后端：节点和链路可以用拓扑文件里的概率（`file` 场景）；`Topology` 写出 JSON；链路图的 `Layer` 第一次用到时才建；`path_sdp_parallel`（只在 CLI 中有） | 统一的 p 和全部写同一个 p 的 file 场景结果逐位相同；写出再读回的拓扑和原来一致；`path_sdp_parallel` 和 `path_sdp` 结果逐位相同；CI 和 Pages 全绿 |
+| 6 | 剩余后端：节点和链路可以用拓扑文件里的概率（`file` 场景）；`Topology` 写出 JSON；链路图的 `Layer` 第一次用到时才建；`path_sdp_parallel`（只在 CLI 中有） | 统一的 p 和全部写同一个 p 的 file 场景结果逐位相同；写出再读回的拓扑和原来一致；`path_sdp_parallel` 和 `path_sdp` 结果逐位相同；CI 和 Pages 全绿 ✅（D40） |
 | 以后 | `netavail-py`、桌面版 | 待定 |
 
 ## 10. 待定问题
