@@ -460,6 +460,49 @@ core 和 CLI 并行（5a）：
   - 每次 `record` 都要扫一遍整个缓存来统计这对的集合数，淘汰时也要线性找最旧的一对，所以总量是节点对数的平方。内置拓扑最多 1431 对，影响不大。
   - 一对被别的 Worker 拿走后，旧 Worker 的缓存里还留着它，`reevaluate` 会多算一次然后丢掉结果。只有队尾被拿走的几对会这样。
 
+## D40 阶段 6（剩余后端）实现中定下的细节（已定，2026-11-19）
+
+用拓扑文件里的概率（`file` 场景）：
+- io 新增 `Prob`：`Uniform(p)` 是所有节点（或所有链路）都取 p，`File` 是每个节点（或链路）取拓扑文件里自己的 `prob`，文件里没写时是 1。
+- 节点：每个场景是一个 `Prob`。CLI 写 `--p 0.9,file`；Engine 的 `probs` 每一项是数字或 `"file"`。
+- 链路：只有一个设置，对所有场景都一样。CLI `--link-prob 0.99` 或 `--link-prob file`；Engine 的 `linkProb` 是数字或 `"file"`；不给时链路不故障。
+- 结果 CSV 的列名用 `Prob` 的文字形式，所以 file 场景的列叫 `file Availability`。
+- demo 页面的两个输入框接受 `file`，界面不另做。
+
+`Topology` 写出 JSON：
+- `Topology::to_json()` 总是写 version 1、label、每个节点和边的 prob；坐标只在有时才写；边的 source、target 写成节点的字符串 id。写出再读回，指纹、节点、边都不变，8 个参考拓扑都测过。
+- Engine 暂不加导出方法，等正式界面需要保存拓扑时再加。
+
+wasm 链路图 `Layer`：
+- `Session` 的链路图 `Layer` 第一次在链路故障时算一对才建。没建之前 `reevaluate` 返回空，`sets` 返回空，都不会建它。
+
+`path_sdp_parallel`（C++ `toSDPSetParallel`）：
+- 作为单独的算法加进注册表，只在 `parallel` feature 下注册，所以只有 CLI 有，浏览器没有（architecture 3.4）。
+- 串行版的循环体提成 `path_products`，串行版和并行版共用。并行版用 rayon 算每条路径的乘积，再按路径顺序合并，结果和 `path_sdp` 逐位相同。和 C++ 一样，少于 200 条路径时走串行版。
+- 项数上限（`max_terms`）：各线程共用一个计数器，每算完一条路径就把乘积数加进去并检查总数，所以超限后很快就停，不会等全部路径算完。CLI 不设这个上限。
+- 参考拓扑一对最多 22 条路径，所以测试用 3×8（190 条，走串行）和 3×9（403 条，走并行）的网格。内置大拓扑里有很多节点对超过 200 条：Germany_50 1131/1225 对，pioro40 583/780，india35 316/595，janos-us-ca 229/741。
+- 实测（release，本机 8 核，p = 0.9）：
+
+| 情况 | path_sdp | path_sdp_parallel |
+|---|---|---|
+| 单对 janos-us-ca 2→19（950 条路径），prepare + evaluate | 约 170 ms | 约 56 ms |
+| 单对 india35 0→13（1186 条路径），prepare + evaluate | 约 195 ms | 约 68 ms |
+| janos-us-ca 全部 741 对总时间，`--threads 1` | 7.32 s | 7.36 s |
+| janos-us-ca 全部 741 对总时间，`--threads 8` | 1.25 s | 1.39 s |
+
+- 也就是说它只适合单独算一个大节点对；节点对已经并行时它没有好处。C++ 里 `evalAvailParallel` 也不和按节点对并行一起用。
+
+code review（`c14517e..3ad0c07`）后修改：
+- `Prob` 新增 `checked()`。CLI 在解析参数时就检查 p 是否在 [0, 1] 内，报错会指明是哪个参数，也不会先建好链路图再报错；Engine 在没有节点场景时也会检查 `linkProb`。
+- `load` 换成另一张图时丢掉链路图 `Layer`，等下次链路故障时再建；同一张图时保留它的缓存。
+- `sets` 先检查算法方案，再看链路图建了没有，所以方案不对时总会报错。
+- 不改：wasm 的 `Prob` 和 io 的 `Prob` 是两份。合成一份的话，io 就要依赖 tsify。
+
+不做：
+- `verify --max-terms`：价值低。
+- 缓存计数和淘汰的复杂度是节点对数的平方（D39）：只有要支持很大的拓扑时才需要。
+- CLI 只算一个节点对的参数（如 `--pair`）：等真要做单对比较时再加。
+
 ---
 
 ## 尚未决定
