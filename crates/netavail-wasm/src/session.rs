@@ -112,11 +112,12 @@ impl Layer {
 }
 
 /// `link_prob` set means links can fail: the algorithms run on the link graph,
-/// where edge `i` is node `n + i` (D18). Each graph keeps its own cache.
+/// where edge `i` is node `n + i` (D18). Each graph keeps its own cache;
+/// the link graph is built the first time a run lets links fail.
 pub struct Session {
     topo: Topology,
     plain: Layer,
-    links: Layer,
+    links: Option<Layer>,
     clock: fn() -> f64,
     cache_limit: usize,
 }
@@ -127,7 +128,7 @@ impl Session {
         let topo = Topology::from_json(topology_json).map_err(|e| e.to_string())?;
         Ok(Session {
             plain: Layer::new(topo.graph().clone()),
-            links: Layer::new(topo.link_graph()),
+            links: None,
             topo,
             clock,
             cache_limit: CACHE_SETS,
@@ -138,7 +139,9 @@ impl Session {
     pub fn load(&mut self, topology_json: &str) -> Result<(), String> {
         let topo = Topology::from_json(topology_json).map_err(|e| e.to_string())?;
         self.plain.replace(topo.graph().clone());
-        self.links.replace(topo.link_graph());
+        if let Some(links) = &mut self.links {
+            links.replace(topo.link_graph());
+        }
         self.topo = topo;
         Ok(())
     }
@@ -202,7 +205,9 @@ impl Session {
         let plan = build_plan(plan)?;
         let scenarios = self.scenarios(probs, link_prob)?;
         let links = link_prob.is_some();
-        let layer = self.layer(links);
+        let Some(layer) = self.layer(links) else {
+            return Ok(PairReports { reports: vec![] });
+        };
         let pairs: Vec<_> = layer
             .pairs
             .iter()
@@ -226,6 +231,9 @@ impl Session {
         kind: WireSetKind,
         links: bool,
     ) -> Result<Sets, String> {
+        if self.layer(links).is_none() {
+            return Ok(Sets { sets: None });
+        }
         let layer = self.layer_mut(links);
         layer.touch((src, dst));
         let cache = &layer.cache;
@@ -239,13 +247,20 @@ impl Session {
         })
     }
 
-    fn layer(&self, links: bool) -> &Layer {
-        if links { &self.links } else { &self.plain }
+    /// `None` if the link graph has not been built yet.
+    fn layer(&self, links: bool) -> Option<&Layer> {
+        if links {
+            self.links.as_ref()
+        } else {
+            Some(&self.plain)
+        }
     }
 
+    /// Builds the link graph if needed.
     fn layer_mut(&mut self, links: bool) -> &mut Layer {
         if links {
-            &mut self.links
+            self.links
+                .get_or_insert_with(|| Layer::new(self.topo.link_graph()))
         } else {
             &mut self.plain
         }
@@ -583,6 +598,27 @@ mod tests {
             .unwrap()
             .reports;
         assert_eq!(again[0].availability, [0.125]);
+    }
+
+    /// The link graph is built only when a run first lets links fail.
+    #[test]
+    fn link_graph_is_built_on_first_use() {
+        let mut s = Session::new(PATH, clock).unwrap();
+        s.load(PATH).unwrap();
+
+        assert!(s.links.is_none());
+        let none = s.sets(&sdp(), 0, 2, WireSetKind::Paths, true).unwrap();
+        assert_eq!(none.sets, None);
+        let empty = s.reevaluate(&sdp(), &[Uniform(0.9)], Some(Uniform(0.8)));
+        assert!(empty.unwrap().reports.is_empty());
+        assert!(s.links.is_none());
+
+        s.run_pair(&sdp(), 0, 2, &[Uniform(0.9)], Some(Uniform(0.8)))
+            .unwrap();
+        s.load(PATH).unwrap();
+
+        let again = s.reevaluate(&sdp(), &[Uniform(0.5)], Some(Uniform(1.0)));
+        assert_eq!(again.unwrap().reports[0].availability, [0.125]);
     }
 
     /// Path a-b-c with probabilities in the file; links 3 and 4 have their own too.
