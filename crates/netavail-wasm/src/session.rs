@@ -1,6 +1,6 @@
 //! Engine logic without wasm-bindgen, so it can be tested natively.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use netavail_core::control::Cancelled;
 use netavail_core::registry::{self, AlgoInfo};
@@ -17,6 +17,8 @@ use crate::wire::{
 /// Browser defaults; a pair that needs more fails instead of exhausting memory.
 pub const MAX_SETS: usize = 100_000;
 pub const MAX_TERMS: usize = 2_000_000;
+/// Path and cut sets one graph's cache keeps before evicting the least recently used pairs.
+pub const CACHE_SETS: usize = 500_000;
 
 /// Limits only: a computation is cancelled by terminating its Worker (architecture.md §3.5).
 struct BrowserLimits;
@@ -35,13 +37,24 @@ impl Control for BrowserLimits {
     }
 }
 
+type Pair = (NodeId, NodeId);
+
+#[derive(Clone, Copy)]
+struct Use {
+    tick: u64,
+    sets: usize,
+}
+
 /// One graph the algorithms run on, with its cache.
 struct Layer {
     graph: Graph,
     cache: Cache,
-    /// Pairs run so far, in order; `reevaluate` goes through these.
-    pairs: Vec<(NodeId, NodeId)>,
-    seen: HashSet<(NodeId, NodeId)>,
+    /// Pairs in the cache, in the order first run; `reevaluate` goes through these.
+    pairs: Vec<Pair>,
+    /// Last use and cached sets of each pair in `pairs`.
+    used: HashMap<Pair, Use>,
+    sets: usize,
+    tick: u64,
 }
 
 impl Layer {
@@ -50,7 +63,41 @@ impl Layer {
             cache: Cache::new(&graph),
             graph,
             pairs: Vec::new(),
-            seen: HashSet::new(),
+            used: HashMap::new(),
+            sets: 0,
+            tick: 0,
+        }
+    }
+
+    fn touch(&mut self, pair: Pair) {
+        self.tick += 1;
+        if let Some(u) = self.used.get_mut(&pair) {
+            u.tick = self.tick;
+        }
+    }
+
+    /// Records a run of `pair`, then evicts the least recently used other pairs
+    /// while the cache holds more than `limit` sets.
+    fn record(&mut self, pair: Pair, limit: usize) {
+        self.tick += 1;
+        let now = Use {
+            tick: self.tick,
+            sets: self.cache.pair_sets(pair.0, pair.1),
+        };
+        match self.used.insert(pair, now) {
+            Some(old) => self.sets -= old.sets,
+            None => self.pairs.push(pair),
+        }
+        self.sets += now.sets;
+        while self.sets > limit {
+            let oldest = self.used.iter().filter(|(p, _)| **p != pair);
+            let Some((old, u)) = oldest.min_by_key(|(_, u)| u.tick).map(|(p, u)| (*p, *u)) else {
+                break;
+            };
+            self.cache.remove_pair(old.0, old.1);
+            self.used.remove(&old);
+            self.pairs.retain(|p| *p != old);
+            self.sets -= u.sets;
         }
     }
 
@@ -71,6 +118,7 @@ pub struct Session {
     plain: Layer,
     links: Layer,
     clock: fn() -> f64,
+    cache_limit: usize,
 }
 
 impl Session {
@@ -82,6 +130,7 @@ impl Session {
             links: Layer::new(topo.link_graph()),
             topo,
             clock,
+            cache_limit: CACHE_SETS,
         })
     }
 
@@ -136,11 +185,11 @@ impl Session {
             ));
         }
         let scenarios = self.scenarios(probs, link_prob)?;
-        let layer = self.layer_mut(link_prob.is_some());
-        if layer.seen.insert((src, dst)) {
-            layer.pairs.push((src, dst));
-        }
-        Ok(self.run(&plan, src, dst, &scenarios, link_prob.is_some()))
+        let links = link_prob.is_some();
+        let report = self.run(&plan, src, dst, &scenarios, links);
+        let limit = self.cache_limit;
+        self.layer_mut(links).record((src, dst), limit);
+        Ok(report)
     }
 
     /// Runs `plan` again on every earlier pair whose sets it already has in the cache,
@@ -169,16 +218,18 @@ impl Session {
     }
 
     /// Sets of one pair from the cache; `links` picks the link graph's cache,
-    /// whose sets can hold link nodes `n + i`.
+    /// whose sets can hold link nodes `n + i`. Counts as a use of the pair.
     pub fn sets(
-        &self,
+        &mut self,
         plan: &PlanSpec,
         src: NodeId,
         dst: NodeId,
         kind: WireSetKind,
         links: bool,
     ) -> Result<Sets, String> {
-        let cache = &self.layer(links).cache;
+        let layer = self.layer_mut(links);
+        layer.touch((src, dst));
+        let cache = &layer.cache;
         let keys = build_plan(plan)?.keys(cache.graph(), src, dst);
         let family = match kind {
             WireSetKind::Paths => cache.paths(&keys.paths),
@@ -460,6 +511,54 @@ mod tests {
         assert_eq!(view.nodes[1].label, "b");
         assert_eq!(view.edges, [(0, 1), (1, 3), (0, 2), (2, 3)]);
         assert_eq!(view.graph.len(), 64);
+    }
+
+    /// Square pairs hold 1 (adjacent) or 2 (opposite) path sets.
+    fn cached(s: &Session) -> Vec<(NodeId, NodeId)> {
+        let mut pairs = s.plain.pairs.clone();
+        pairs.retain(|&(a, b)| s.plain.cache.pair_sets(a, b) > 0);
+        pairs
+    }
+
+    #[test]
+    fn over_the_limit_the_least_recently_used_pairs_are_evicted() {
+        let mut s = Session::new(SQUARE, clock).unwrap();
+        s.cache_limit = 3;
+        s.run_pair(&dfs(), 0, 1, &[], None).unwrap();
+        s.run_pair(&dfs(), 0, 2, &[], None).unwrap();
+        s.run_pair(&dfs(), 1, 3, &[], None).unwrap();
+        assert_eq!(cached(&s), [(0, 1), (0, 2), (1, 3)]);
+
+        s.run_pair(&dfs(), 0, 3, &[], None).unwrap();
+
+        assert_eq!(cached(&s), [(1, 3), (0, 3)]);
+        assert_eq!(s.reevaluate(&dfs(), &[], None).unwrap().reports.len(), 2);
+    }
+
+    #[test]
+    fn reading_sets_counts_as_a_use() {
+        let mut s = Session::new(SQUARE, clock).unwrap();
+        s.cache_limit = 2;
+        s.run_pair(&dfs(), 0, 1, &[], None).unwrap();
+        s.run_pair(&dfs(), 0, 2, &[], None).unwrap();
+
+        s.sets(&dfs(), 0, 1, WireSetKind::Paths, false).unwrap();
+        s.run_pair(&dfs(), 1, 3, &[], None).unwrap();
+
+        assert_eq!(cached(&s), [(0, 1), (1, 3)]);
+    }
+
+    #[test]
+    fn a_pair_over_the_limit_alone_is_kept_until_the_next_run() {
+        let mut s = Session::new(SQUARE, clock).unwrap();
+        s.cache_limit = 1;
+        s.run_pair(&dfs(), 0, 1, &[], None).unwrap();
+
+        s.run_pair(&dfs(), 0, 3, &[], None).unwrap();
+
+        assert_eq!(cached(&s), [(0, 3)]);
+        let sets = s.sets(&dfs(), 0, 3, WireSetKind::Paths, false).unwrap();
+        assert_eq!(sets.sets.map(|s| s.len()), Some(2));
     }
 
     /// Path a-b-c: edges 0 and 1 are link nodes 3 and 4.

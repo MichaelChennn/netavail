@@ -102,4 +102,82 @@ impl Cache {
     pub fn prepared(&self, key: &PrepareKey) -> Option<&dyn Prepared> {
         self.prepared.get(key).map(|p| &**p)
     }
+
+    /// Path and cut sets stored for the pair, over every algorithm.
+    pub fn pair_sets(&self, src: NodeId, dst: NodeId) -> usize {
+        let of = |k: &PathKey| k.src == src && k.dst == dst;
+        let paths = self.paths.iter().filter(|(k, _)| of(k)).map(|(_, f)| f);
+        let cuts = self
+            .cuts
+            .iter()
+            .filter(|(k, _)| of(&k.paths))
+            .map(|(_, f)| f);
+        paths.chain(cuts).map(|f| f.sets.len()).sum()
+    }
+
+    /// Drops every stage stored for the pair.
+    pub fn remove_pair(&mut self, src: NodeId, dst: NodeId) {
+        let of = |k: &PathKey| k.src == src && k.dst == dst;
+        self.paths.retain(|k, _| !of(k));
+        self.cuts.retain(|k, _| !of(&k.paths));
+        self.prepared.retain(|k, _| match &k.sets {
+            SetKey::Paths(p) => !of(p),
+            SetKey::Cuts(c) => !of(&c.paths),
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::availability::CutDisjoint;
+    use crate::control::NoControl;
+    use crate::pipeline::{Plan, run_pair_cached};
+    use crate::prob::ProbabilityMap;
+    use crate::sets::minimalcuts::DecisionTree;
+    use crate::sets::minimalpaths::Dfs;
+
+    /// Cycle 0-1-3-2-0.
+    fn square() -> Graph {
+        Graph::from_edges(4, &[(0, 1), (1, 3), (0, 2), (2, 3)]).unwrap()
+    }
+
+    fn fill(cache: &mut Cache, g: &Graph, pairs: &[(NodeId, NodeId)]) -> Plan {
+        let plan = Plan::new(&Dfs, Some(&DecisionTree), Some(&CutDisjoint)).unwrap();
+        let p = [ProbabilityMap::from_nodes(&[0.9; 4])];
+        for &(s, d) in pairs {
+            run_pair_cached(&plan, g, s, d, &p, &NoControl, cache);
+        }
+        plan
+    }
+
+    #[test]
+    fn pair_sets_counts_paths_and_cuts_of_that_pair_only() {
+        let g = square();
+        let mut cache = Cache::new(&g);
+        let plan = fill(&mut cache, &g, &[(0, 3), (0, 1)]);
+
+        let keys = plan.keys(&g.fingerprint(), 0, 3);
+        let paths = cache.paths(&keys.paths).unwrap().sets.len();
+        let cuts = cache.cuts(&keys.cuts.unwrap()).unwrap().sets.len();
+        assert_eq!(paths, 2);
+        assert_eq!(cache.pair_sets(0, 3), paths + cuts);
+        assert_eq!(cache.pair_sets(3, 0), 0);
+    }
+
+    #[test]
+    fn remove_pair_drops_every_stage_of_that_pair_only() {
+        let g = square();
+        let mut cache = Cache::new(&g);
+        let plan = fill(&mut cache, &g, &[(0, 3), (0, 1)]);
+
+        cache.remove_pair(0, 3);
+
+        let gone = plan.keys(&g.fingerprint(), 0, 3);
+        assert!(cache.paths(&gone.paths).is_none());
+        assert!(cache.cuts(&gone.cuts.unwrap()).is_none());
+        assert!(cache.prepared(&gone.prepare.unwrap()).is_none());
+        let kept = plan.keys(&g.fingerprint(), 0, 1);
+        assert!(cache.prepared(&kept.prepare.unwrap()).is_some());
+    }
 }

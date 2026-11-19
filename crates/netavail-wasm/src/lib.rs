@@ -84,7 +84,7 @@ impl Engine {
 
     /// `links` reads the sets computed with a `link_prob`.
     pub fn sets(
-        &self,
+        &mut self,
         plan: Ts<PlanSpec>,
         src: u32,
         dst: u32,
