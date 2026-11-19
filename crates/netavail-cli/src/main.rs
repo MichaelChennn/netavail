@@ -225,10 +225,11 @@ fn run(
 
     // Pairs are original nodes only; link nodes are never a source or destination
     let pairs = all_pairs(n as u32);
+    let fingerprint = g.fingerprint();
     let started = clock();
     let outputs = map_pairs(&pairs, &CtrlC, |src, dst| {
         let timer = StageTimer::new(&clock, &CtrlC);
-        let mut cache = Cache::new(g);
+        let mut cache = Cache::for_fingerprint(fingerprint);
         let result = run_pair_cached(&plan, g, src, dst, &scenarios, &timer, &mut cache);
         // Sets are kept only when they will be exported
         let sets = sets_dir.is_some().then(|| {

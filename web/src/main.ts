@@ -26,10 +26,11 @@ const ui = {
   detailBody: $("detail-body"),
 };
 
-// ---- Workers: ?workers=N, else one per core but one, at most 8 ----
+// ---- Workers: ?workers=N (at most 32), else one per core but one, at most 8 ----
 
 const asked = Number(new URLSearchParams(location.search).get("workers"));
-const workers = asked >= 1 ? Math.floor(asked) : Math.min(Math.max(navigator.hardwareConcurrency - 1, 1), 8);
+const cores = navigator.hardwareConcurrency || 2; // Hidden in some browsers
+const workers = asked >= 1 ? Math.min(Math.floor(asked), 32) : Math.min(Math.max(cores - 1, 1), 8);
 const pool = new Pool(() => new Worker(new URL("./worker.ts", import.meta.url), { type: "module" }), workers);
 
 // ---- State ----
@@ -266,7 +267,9 @@ async function showSets(src: number, dst: number) {
     const links = shownLinkProb !== undefined;
     const { sets } = await pool.sets(shownPlan, src, dst, kind, links);
     const h = document.createElement("h2");
-    h.textContent = kind === "paths" ? `Minimal path sets (${sets?.length ?? 0})` : `Minimal cut sets (${sets?.length ?? 0})`;
+    // null: failed, evicted, or its Worker was restarted by a cancel
+    const count = sets ? String(sets.length) : "not in cache";
+    h.textContent = kind === "paths" ? `Minimal path sets (${count})` : `Minimal cut sets (${count})`;
     const list = document.createElement("ol");
     for (const set of (sets ?? []).slice(0, 500)) {
       const li = document.createElement("li");

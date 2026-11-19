@@ -77,7 +77,8 @@ impl Cache {
         Cache::for_fingerprint(graph.fingerprint())
     }
 
-    pub(crate) fn for_fingerprint(graph: Fingerprint) -> Cache {
+    /// Like [`Cache::new`], for a fingerprint computed once and reused.
+    pub fn for_fingerprint(graph: Fingerprint) -> Cache {
         Cache {
             graph,
             paths: HashMap::new(),

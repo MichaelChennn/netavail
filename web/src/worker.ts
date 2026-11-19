@@ -31,10 +31,10 @@ function handle(req: Request): unknown {
 }
 
 self.onmessage = async (event: MessageEvent<Request>) => {
-  await ready;
   const req = event.data;
   let reply: Reply;
   try {
+    await ready; // A failed wasm load must still answer, or the caller waits forever
     reply = { id: req.id, ok: true, value: handle(req) };
   } catch (e) {
     reply = { id: req.id, ok: false, error: e instanceof Error ? e.message : String(e) };
