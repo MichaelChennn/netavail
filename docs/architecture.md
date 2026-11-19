@@ -210,7 +210,7 @@ pub trait Control: Sync {
 }
 ```
 
-由适配层实现：CLI 用 Ctrl-C 设置一个原子标志，用 `Instant` 计时；浏览器用 `performance.now()` 计时，并默认设置集合个数上限，取消计算就是直接 terminate Worker。
+由适配层实现：CLI 用 Ctrl-C 设置一个原子标志，用 `Instant` 计时；浏览器用 `performance.now()` 计时，并默认设置集合个数上限。Worker 在算一对时收不到消息，所以浏览器里的取消由 Worker 池负责：不再分配新的节点对，1 秒后还在算的 Worker 才 terminate（D39）。
 
 ### 3.6 缓存 key（D28、D30）
 
@@ -251,8 +251,9 @@ core 只负责算出 key，缓存存在哪里由适配层决定。
 
 ```
 主线程 ─ web/src/main.ts（demo 页面）
+   │      web/src/pool.ts（Worker 池：分配节点对、路由、取消）
    │ postMessage
-Worker ─ web/src/worker.ts（转发消息）
+Worker × N ─ web/src/worker.ts（转发消息）
    │
 netavail-wasm::Engine ─► netavail-io ─► netavail-core
 ```
@@ -265,14 +266,15 @@ netavail-wasm::Engine ─► netavail-io ─► netavail-core
 | `load(topology)` | 换拓扑；图指纹没变就保留缓存 |
 | `topology()` | 节点（含 label、坐标）、边、图指纹 |
 | `algorithms()` | 读注册表 |
-| `runPair(plan, src, dst, probs)` | 计算一对，结果写入缓存，返回 `PairReport`（`PairResult` + 各阶段耗时）；每个 p 是一个场景 |
-| `reevaluate(plan, probs)` | 对已缓存的节点对只重新 evaluate |
-| `sets(plan, src, dst, kind)` | 从缓存取集合 |
+| `runPair(plan, src, dst, probs, linkProb?)` | 计算一对，结果写入缓存，返回 `PairReport`（`PairResult` + 各阶段耗时）；每个 p 是一个场景；给 `linkProb` 时链路也会故障（D38） |
+| `reevaluate(plan, probs, linkProb?)` | 对已缓存的节点对只重新 evaluate |
+| `sets(plan, src, dst, kind, links)` | 从缓存取集合；`links` 选链路图的缓存 |
 
 - Plan 里写算法 id 字符串，由 Rust 在注册表里查找。Worker 消息和 `Engine` 的方法一一对应。
 - 用 serde + tsify 根据 Rust 结构体生成 TS 类型，只维护一份类型定义。
 - 换拓扑时，如果指纹没变，就保留缓存。
-- **当前只做 demo**：原生 TS + Vite，1 个 Worker，单个页面（选拓扑、选算法、设概率、计算、显示进度、取消、结果表）。它只用来验证 wasm 版的正确性和部署流程。正式界面等 core 稳定后重新设计，届时再实现多 Worker 动态分配（D17），并按"哪对在哪个 Worker 上"路由重算请求（D30）。
+- **当前是 demo 页面**：原生 TS + Vite，单个页面（选拓扑、选算法、设概率、计算、显示进度、取消、结果表）。正式界面等用户设计好后再做（阶段 5c、5d）。
+- Worker 池（阶段 5b，D39）：默认 min(CPU 核数 − 1, 8) 个 Worker，空闲的 Worker 取下一对（D17）；主线程记录"哪对在哪个 Worker 上"，重算和取集合都发给那个 Worker（D30）。每个 Worker 的缓存每张图最多 500 000 个集合，超出时淘汰最久没用的节点对。
 - 部署：GitHub Actions 依次运行 `wasm-pack build --target web` 和 `vite build`（`base: "/netavail/"`），发布到 `michaelchennn.github.io/netavail`。
 
 ```
@@ -283,6 +285,7 @@ web/
 ├── public/topologies/*.json   # 内置示例，来自 PyRBD-Suite/data/topologies，跳过两个空文件
 └── src/
     ├── main.ts
+    ├── pool.ts                # Worker 池，pool.test.ts 是它的 vitest 测试
     ├── worker.ts
     └── pkg/                   # wasm-pack 产物，不提交
 ```
