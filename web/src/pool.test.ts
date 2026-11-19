@@ -64,13 +64,19 @@ function allPairs(n: number): Pair[] {
   return pairs;
 }
 
+const GRACE = 30;
+
 async function setup(size: number) {
   const workers: FakeWorker[] = [];
-  const pool = new Pool(() => {
-    const w = new FakeWorker(workers.length);
-    workers.push(w);
-    return w;
-  }, size);
+  const pool = new Pool(
+    () => {
+      const w = new FakeWorker(workers.length);
+      workers.push(w);
+      return w;
+    },
+    size,
+    GRACE,
+  );
   await pool.open("g");
   return { pool, workers };
 }
@@ -128,7 +134,26 @@ describe("Pool", () => {
     expect((await pool.reevaluate(args)).map(pairOf)).toEqual(pairs.map(([s, d]) => `${s}-${d}`));
   });
 
-  it("cancel restarts only the busy Workers, so idle ones keep their pairs", async () => {
+  it("cancel lets busy Workers finish their pair and keep it", async () => {
+    const { pool, workers } = await setup(2);
+    const pairs = allPairs(4);
+    for (const w of workers) w.hold = true;
+    const seen: string[] = [];
+
+    const running = pool.runPairs(args, pairs, (r) => seen.push(pairOf(r)));
+    await vi.waitFor(() => expect(workers.every((w) => w.ran().length === 1)).toBe(true));
+    pool.cancel();
+    for (const w of workers) w.release();
+
+    await expect(running).rejects.toBeInstanceOf(Cancelled);
+    await new Promise((r) => setTimeout(r, GRACE * 2));
+    expect(workers.length).toBe(2);
+    expect(workers.some((w) => w.terminated)).toBe(false);
+    expect(workers.flatMap((w) => w.ran()).length).toBe(2);
+    expect((await pool.reevaluate(args)).map(pairOf)).toEqual(seen.sort());
+  });
+
+  it("cancel restarts a Worker still busy after the grace period; idle ones keep their pairs", async () => {
     const { pool, workers } = await setup(2);
     const pairs = allPairs(4);
     workers[0].hold = true;
@@ -136,6 +161,7 @@ describe("Pool", () => {
     const running = pool.runPairs(args, pairs, () => {});
     await vi.waitFor(() => expect(workers[1].ran().length).toBe(pairs.length - 1));
     pool.cancel();
+    expect(workers[0].terminated).toBe(false);
 
     await expect(running).rejects.toBeInstanceOf(Cancelled);
     expect(workers.length).toBe(3);

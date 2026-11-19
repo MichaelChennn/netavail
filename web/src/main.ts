@@ -1,5 +1,5 @@
-// Demo page (D32): pick a topology and algorithms, run every pair in one Worker, show a table.
-import type { Method, Methods, Reply, Request } from "./protocol";
+// Demo page (D32): pick a topology and algorithms, run every pair on a Worker pool, show a table.
+import { Cancelled, Pool, type Pair } from "./pool";
 import type { AlgorithmInfo, PairReport, PlanSpec, TopologyView } from "./pkg/netavail_wasm";
 
 type Entry = { file: string; name: string; nodes: number; edges: number; reference: boolean };
@@ -26,44 +26,14 @@ const ui = {
   detailBody: $("detail-body"),
 };
 
-// ---- Worker RPC; cancelling terminates the Worker and starts a fresh one ----
+// ---- Workers: ?workers=N, else one per core but one, at most 8 ----
 
-let worker: Worker;
-let nextId = 0;
-const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
-
-function startWorker() {
-  worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
-  worker.onmessage = (event: MessageEvent<Reply>) => {
-    const reply = event.data;
-    const p = pending.get(reply.id);
-    pending.delete(reply.id);
-    if (reply.ok) p?.resolve(reply.value);
-    else p?.reject(new Error(reply.error));
-  };
-}
-
-function call<M extends Method>(method: M, args: Methods[M]["args"]): Promise<Methods[M]["result"]> {
-  const id = nextId++;
-  const req: Request<M> = { id, method, args };
-  return new Promise((resolve, reject) => {
-    pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
-    worker.postMessage(req);
-  });
-}
-
-class Cancelled extends Error {}
-
-function restartWorker() {
-  worker.terminate();
-  for (const p of pending.values()) p.reject(new Cancelled("cancelled"));
-  pending.clear();
-  startWorker();
-}
+const asked = Number(new URLSearchParams(location.search).get("workers"));
+const workers = asked >= 1 ? Math.floor(asked) : Math.min(Math.max(navigator.hardwareConcurrency - 1, 1), 8);
+const pool = new Pool(() => new Worker(new URL("./worker.ts", import.meta.url), { type: "module" }), workers);
 
 // ---- State ----
 
-let topoJson = "";
 let topo: TopologyView | null = null;
 let reports: PairReport[] = [];
 let shownPlan: PlanSpec | null = null;
@@ -123,8 +93,7 @@ function setRunning(on: boolean) {
 // ---- Topology ----
 
 async function openTopology(json: string) {
-  topoJson = json;
-  topo = await call("open", { json });
+  topo = await pool.open(json);
   ui.topoInfo.textContent = `${topo.nodes.length} nodes, ${topo.edges.length} edges, ${
     (topo.nodes.length * (topo.nodes.length - 1)) / 2
   } pairs`;
@@ -154,7 +123,7 @@ async function runAll() {
   }
   const spec = plan();
   const n = topo.nodes.length;
-  const pairs: [number, number][] = [];
+  const pairs: Pair[] = [];
   for (let s = 0; s < n; s++) for (let d = s + 1; d < n; d++) pairs.push([s, d]);
 
   reports = [];
@@ -169,23 +138,22 @@ async function runAll() {
   ui.progress.value = 0;
   const started = performance.now();
   const body = ui.table.tBodies[0];
+  // Rows come in as Workers finish them, and are sorted at the end
+  const onReport = (report: PairReport) => {
+    reports.push(report);
+    body.append(row(report));
+    ui.progress.value = reports.length;
+    setStatus(`${reports.length} / ${pairs.length} pairs on ${pool.size} Workers${hint}`);
+  };
   try {
-    for (const [src, dst] of pairs) {
-      const report = await call("runPair", { plan: spec, src, dst, probs, linkProb });
-      reports.push(report);
-      body.append(row(report));
-      ui.progress.value = reports.length;
-      setStatus(`${reports.length} / ${pairs.length} pairs${hint}`);
-    }
+    await pool.runPairs({ plan: spec, probs, linkProb }, pairs, onReport);
     setStatus(summary(performance.now() - started) + hint);
   } catch (e) {
-    if (e instanceof Cancelled) {
-      setStatus(`cancelled after ${reports.length} of ${pairs.length} pairs`);
-      await call("open", { json: topoJson });
-    } else {
-      setStatus((e as Error).message, true);
-    }
+    if (e instanceof Cancelled) setStatus(`cancelled after ${reports.length} of ${pairs.length} pairs`);
+    else setStatus((e as Error).message, true);
   } finally {
+    reports.sort((a, b) => a.src - b.src || a.dst - b.dst);
+    renderTable();
     setRunning(false);
   }
 }
@@ -197,14 +165,17 @@ async function reevaluate() {
     const linkProb = parseLinkProb();
     const spec = plan();
     const started = performance.now();
-    const out = await call("reevaluate", { plan: spec, probs, linkProb });
-    if (out.reports.length === 0) return setStatus("nothing cached for these algorithms yet; run first");
-    reports = out.reports;
+    const out = await pool.reevaluate({ plan: spec, probs, linkProb });
+    if (out.length === 0) return setStatus("nothing cached for these algorithms yet; run first");
+    reports = out;
     shownPlan = spec;
     shownProbs = probs;
     shownLinkProb = linkProb;
     renderTable();
-    setStatus(`re-evaluated ${reports.length} cached pairs in ${(performance.now() - started).toFixed(1)} ms`);
+    // Pairs evicted from the caches, or never run, are left out
+    const n = topo.nodes.length;
+    const rest = reports.length < (n * (n - 1)) / 2 ? "; the other pairs are not cached, run again for them" : "";
+    setStatus(`re-evaluated ${reports.length} cached pairs in ${(performance.now() - started).toFixed(1)} ms${rest}`);
   } catch (e) {
     setStatus((e as Error).message, true);
   }
@@ -219,7 +190,10 @@ function summary(wallMs: number) {
     .map((k) => `${k.replace("_ms", "")} ${sum(k).toFixed(1)} ms`)
     .join(", ");
   const links = shownLinkProb === undefined ? "" : ` Links at ${shownLinkProb}.`;
-  return `${reports.length} pairs in ${wallMs.toFixed(0)} ms (${failed} failed). Stage totals: ${stages}.${links}`;
+  // Cached stages report no time, so stage totals cover only what was computed
+  const hits = reports.filter((r) => !r.error && r.times.paths_ms === undefined).length;
+  const cached = hits ? ` ${hits} pairs reused cached sets.` : "";
+  return `${reports.length} pairs on ${pool.size} Workers in ${wallMs.toFixed(0)} ms (${failed} failed). Stage totals: ${stages}.${cached}${links}`;
 }
 
 // ---- Table ----
@@ -290,7 +264,7 @@ async function showSets(src: number, dst: number) {
   const kinds = shownPlan.cuts ? (["paths", "cuts"] as const) : (["paths"] as const);
   for (const kind of kinds) {
     const links = shownLinkProb !== undefined;
-    const { sets } = await call("sets", { plan: shownPlan, src, dst, kind, links });
+    const { sets } = await pool.sets(shownPlan, src, dst, kind, links);
     const h = document.createElement("h2");
     h.textContent = kind === "paths" ? `Minimal path sets (${sets?.length ?? 0})` : `Minimal cut sets (${sets?.length ?? 0})`;
     const list = document.createElement("ol");
@@ -317,8 +291,7 @@ function fillSelect(select: HTMLSelectElement, algos: AlgorithmInfo[], none?: st
 }
 
 async function main() {
-  startWorker();
-  const { algorithms } = await call("algorithms", {});
+  const { algorithms } = await pool.algorithms();
   fillSelect(ui.paths, algorithms.filter((a) => a.kind === "paths"));
   fillSelect(ui.cuts, algorithms.filter((a) => a.kind === "cuts"), "none");
   fillSelect(ui.avail, algorithms.filter((a) => a.kind === "availability"), "none");
@@ -343,7 +316,10 @@ async function main() {
   };
   ui.run.onclick = () => runAll();
   ui.reevaluate.onclick = () => reevaluate();
-  ui.cancel.onclick = () => restartWorker();
+  ui.cancel.onclick = () => {
+    pool.cancel();
+    setStatus("stopping: busy Workers finish their pair, or stop within 1 s");
+  };
   renderTable();
 }
 

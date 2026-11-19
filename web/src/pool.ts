@@ -15,6 +15,9 @@ export class Cancelled extends Error {}
 export type Pair = [number, number];
 export type RunArgs = { plan: PlanSpec; probs: number[]; linkProb?: number };
 
+/// How long `cancel()` lets a busy Worker finish its pair before terminating it.
+export const GRACE_MS = 1000;
+
 /// One Worker and its outstanding calls.
 class Slot {
   private port: Port;
@@ -27,6 +30,16 @@ class Slot {
 
   get busy() {
     return this.pending.size > 0;
+  }
+
+  /// Ids of the calls still waiting for a reply.
+  calls(): number[] {
+    return [...this.pending.keys()];
+  }
+
+  /// Whether any of `ids` is still waiting.
+  waiting(ids: number[]) {
+    return ids.some((id) => this.pending.has(id));
   }
 
   call<M extends Method>(method: M, args: Methods[M]["args"]): Promise<Methods[M]["result"]> {
@@ -70,7 +83,11 @@ export class Pool {
   private graph: string | null = null;
   private cancelled = false;
 
-  constructor(spawn: () => Port, size: number) {
+  constructor(
+    spawn: () => Port,
+    size: number,
+    private graceMs = GRACE_MS,
+  ) {
     this.slots = Array.from({ length: Math.max(1, size) }, () => new Slot(spawn));
   }
 
@@ -125,15 +142,19 @@ export class Pool {
     if (this.cancelled) throw new Cancelled("cancelled");
   }
 
-  /// Stops handing out pairs and restarts only the Workers in the middle of a call;
-  /// idle Workers keep their caches.
+  /// Stops handing out pairs; a busy Worker gets `graceMs` to finish its pair and keep
+  /// its cache, then is terminated and restarted.
   cancel() {
     this.cancelled = true;
     this.slots.forEach((slot, i) => {
-      if (!slot.busy) return;
-      slot.restart();
-      for (const [k, o] of this.owner) if (o === i) this.owner.delete(k);
-      if (this.json !== null) slot.call("open", { json: this.json }).catch(() => {});
+      const ids = slot.calls();
+      if (ids.length === 0) return;
+      setTimeout(() => {
+        if (!slot.waiting(ids)) return;
+        slot.restart();
+        for (const [k, o] of this.owner) if (o === i) this.owner.delete(k);
+        if (this.json !== null) slot.call("open", { json: this.json }).catch(() => {});
+      }, this.graceMs);
     });
   }
 
