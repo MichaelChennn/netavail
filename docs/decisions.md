@@ -417,6 +417,49 @@ wasm 和前端：
   - path_sdp 排序里用二分代替 `contains`；`prepare` 不再整份克隆路集。
   - 边的 `prob` 现在会被检查，但还没有用到。不合法的值也会让拓扑加载失败，和节点的检查保持一致。
 
+
+## D39 阶段 5（5a、5b）实现中定下的细节（已定，2026-11-19）
+
+原则：
+- 各算法保持用户 C++ 原版的做法，慢的算法也不再优化。它们是用户逐步改进算法的过程，留着给用户比较；想要快，直接选最快的算法。只做不改变算法相对快慢的工程改动。
+
+core 和 CLI 并行（5a）：
+- `parallel` feature 下 `run_all` 用 rayon 的 `par_iter` 并行计算节点对（`map_pairs`）。结果按节点对原来的顺序返回。取消后不再开始新的节点对，没开始的节点对不出现在结果里；并行时缺的不一定在末尾。不开 feature 时仍然串行，wasm 用的就是串行版。
+- CLI 打开 core 的 `parallel`。`run --threads N`，默认 0，表示每个 CPU 核一个线程。线程池在 `main` 里建好。每个节点对用自己的临时缓存，需要导出集合时从里面取。
+- Cargo 会把同一个 workspace 里的 feature 合并，所以 `cargo test --workspace` 测的是并行版。CI 另加一个 `cargo test -p netavail-core` 的 job，单独测串行版。
+- 加速比（release，本机 8 核，全部节点对总时间，单位 ms，3 次取最快）：
+
+| 拓扑 | 方案 | 1 线程 | 2 | 4 | 8 线程 | 加速比 |
+|---|---|---|---|---|---|---|
+| Austria_24 | dfs + path_sdp | 2.7 | 1.4 | 0.8 | 0.6 | 4.5× |
+| Austria_24 | dfs + decision_tree + cut_disjoint | 6.0 | 3.2 | 1.9 | 1.3 | 4.6× |
+| Austria_24 | dfs + combination_bits | 25.6 | 13.3 | 9.1 | 6.1 | 4.2× |
+| Sweden | dfs + path_sdp | 4.0 | 2.6 | 1.2 | 0.9 | 4.4× |
+| Sweden | dfs + decision_tree + cut_disjoint | 62.3 | 48.4 | 16.3 | 9.3 | 6.7× |
+| Sweden | dfs + combination_bits | 396.9 | 238.5 | 115.2 | 73.0 | 5.4× |
+
+浏览器 Worker 池（5b）：
+- 缓存上限：每个 Worker 里每张图（原图、链路图各算一张）最多存 500 000 个路集和割集，prepared 不计入。超出时删掉最久没用的节点对。运行一对、读取它的集合都算一次使用，`reevaluate` 不算。刚算完的那一对不会被删，即使它一对就超过上限。core 新增 `Cache::pair_sets`、`Cache::remove_pair`。
+- Worker 数：默认 min(CPU 核数 − 1, 8)，至少 1 个；`?workers=N` 可以指定。
+- 分配（`web/src/pool.ts`）：每个 Worker 有一个自己的队列，另外有一个新节点对的共享队列。Worker 先取自己的队列，再取共享队列，都空了就从最长的别人队列的末尾拿一对，这一对的归属随之转给它。
+- 路由：主线程记录"节点对 → 算过它的 Worker"。key 是原图或链路图加上节点对，不含算法，所以换割集算法时还能复用同一个 Worker 里的路集。`open` 时如果图指纹变了，就清空这张表。
+- `reevaluate` 发给所有 Worker。一对被别的 Worker 拿走后，旧 Worker 的缓存里可能还有它，所以只保留归属 Worker 的结果，再按节点对排序。`sets` 发给归属 Worker，没有归属时发给第一个。
+- 取消：不再分配新的节点对；正在算的 Worker 有 1 秒把手上那一对算完，缓存因此保留。1 秒后还没算完的 Worker 才 terminate 并重启，同时删掉它的归属、重新 `open`。Worker 在算一对的过程中收不到消息，只能这样处理。
+- 计时：缓存命中的阶段不计时间，汇总里会标出有多少对用了缓存。用到缓存时，挂钟时间不能当 benchmark；正式的性能数据用 CLI 测。
+- 测试：vitest 用假 Worker 测 `Pool`，CI 新增 `web` job 运行 `npm test`。端到端测试用 playwright：Germany_17 上 1 个和 4 个 Worker 的 136 行结果一致；Sweden 计算中途取消，已算完的节点对都还能重新评估。
+
+推迟：
+- 5c、5d（正式界面）：等用户设计好界面再做。
+- 每个节点、每条边用拓扑文件里自己的 prob。
+- path_sdp 二分查找、`prepare` 不克隆路集、AbsorbList 优化：会让算法比 C++ 原版快，按上面的原则不做。
+- 割集方法在链路图上的性能：同上，不做。
+- path_sdp 并行版（C++ `toSDPSetParallel`）：如果做，就作为单独的算法加进注册表，用户可以和串行版比较。
+- wasm 链路图 `Layer` 第一次用到时才建、`verify --max-terms`、`Topology` 写出 JSON。
+- code review 提出、暂不处理的几项：
+  - prepared 不计入缓存上限。这是 5b 设计时定的，淘汰节点对时 prepared 也一起删掉。
+  - 每次 `record` 都要扫一遍整个缓存来统计这对的集合数，淘汰时也要线性找最旧的一对，所以总量是节点对数的平方。内置拓扑最多 1431 对，影响不大。
+  - 一对被别的 Worker 拿走后，旧 Worker 的缓存里还留着它，`reevaluate` 会多算一次然后丢掉结果。只有队尾被拿走的几对会这样。
+
 ---
 
 ## 尚未决定
