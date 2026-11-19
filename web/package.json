@@ -6,10 +6,12 @@
     "wasm": "wasm-pack build ../crates/netavail-wasm --target web --out-dir ../../web/src/pkg",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run"
   },
   "devDependencies": {
     "typescript": "~5.9.3",
-    "vite": "^7.3.8"
+    "vite": "^7.3.8",
+    "vitest": "^3.2.4"
   }
 }
