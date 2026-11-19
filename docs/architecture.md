@@ -239,10 +239,12 @@ core 只负责算出 key，缓存存在哪里由适配层决定。
 ```
 拓扑 JSON ──解析──► Topology (io)：name、nodes、edges，包括坐标、label、链路概率
                       ├─ .graph()         ──► Graph (core)
-                      └─ .scenario(nodes, links) ──► ProbabilityMap (core)
+                      ├─ .scenario(nodes, links) ──► ProbabilityMap (core)
+                      └─ .to_json()       ──► 拓扑 JSON（version 1，读回来和原来一致）
 ```
 
 - 字符串 id 按出现顺序映射成 0…n-1。`version` 字段可选。
+- `to_json()` 总是写出 `version: 1` 和每个节点的 label、prob；坐标只在有的时候写；边用原来的字符串 id。Engine 暂时没有导出方法，正式界面需要时再加。
 - 场景（`Prob`）：一个数 p（所有节点或所有链路都取 p），或者 `file`（每个节点、每条边用文件里自己的 prob）。`scenario(nodes, links)` 先给出 n 个节点的概率；给了 `links` 时，后面再接每条边的概率，顺序和链路图里的节点编号一致。
 - 模块：`topology`（拓扑读写）、`results`（结果 CSV、集合导出 + `meta.json`）、`reference`（解析旧参考答案 CSV，规范化后对拍）。
 - 导出集合时附带图指纹，导入时比对。旧的参考答案 CSV 没有指纹，导入时改做合法性检查。

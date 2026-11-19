@@ -7,7 +7,7 @@ use std::str::FromStr;
 use netavail_core::transform::to_link_graph;
 use netavail_core::types::NodeId;
 use netavail_core::{Graph, ProbabilityMap};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -107,6 +107,33 @@ struct RawEdge {
     prob: f64,
 }
 
+/// What [`Topology::to_json`] writes; borrows from the topology.
+#[derive(Serialize)]
+struct OutTopology<'a> {
+    version: u64,
+    name: &'a str,
+    nodes: Vec<OutNode<'a>>,
+    edges: Vec<OutEdge<'a>>,
+}
+
+#[derive(Serialize)]
+struct OutNode<'a> {
+    id: &'a str,
+    label: &'a str,
+    prob: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    x: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    y: Option<f64>,
+}
+
+#[derive(Serialize)]
+struct OutEdge<'a> {
+    source: &'a str,
+    target: &'a str,
+    prob: f64,
+}
+
 fn one() -> f64 {
     1.0
 }
@@ -184,6 +211,36 @@ impl Topology {
             edges,
             graph,
         })
+    }
+
+    /// Writes version 1 JSON that [`Topology::from_json`] reads back unchanged.
+    pub fn to_json(&self) -> String {
+        let id = |i: NodeId| self.nodes[i as usize].id.as_str();
+        let out = OutTopology {
+            version: 1,
+            name: &self.name,
+            nodes: self
+                .nodes
+                .iter()
+                .map(|n| OutNode {
+                    id: &n.id,
+                    label: &n.label,
+                    prob: n.prob,
+                    x: n.x,
+                    y: n.y,
+                })
+                .collect(),
+            edges: self
+                .edges
+                .iter()
+                .map(|e| OutEdge {
+                    source: id(e.source),
+                    target: id(e.target),
+                    prob: e.prob,
+                })
+                .collect(),
+        };
+        serde_json::to_string_pretty(&out).expect("plain structs always serialize")
     }
 
     pub fn name(&self) -> &str {
@@ -294,6 +351,41 @@ mod tests {
         );
         assert_eq!(t.graph().node_count(), 3);
         assert_eq!(t.graph().neighbors(1), &[0, 2]);
+    }
+
+    #[test]
+    fn written_json_reads_back_the_same() {
+        let t = Topology::from_json(
+            r#"{"name": "tiny",
+                "nodes": [{"id": "c", "label": "Cork", "prob": 0.9, "x": 1.5, "y": -2.0},
+                          {"id": "a", "prob": 0.1234567890123456789}, {"id": "b", "x": 3.0}],
+                "edges": [{"source": "a", "target": "c", "prob": 0.8},
+                          {"source": "b", "target": "a"}]}"#,
+        )
+        .unwrap();
+
+        let back = Topology::from_json(&t.to_json()).unwrap();
+
+        assert_eq!(back.name(), t.name());
+        assert_eq!(back.nodes(), t.nodes());
+        assert_eq!(back.edges(), t.edges());
+    }
+
+    #[test]
+    fn written_json_has_version_string_ids_and_no_missing_coordinates() {
+        let t = Topology::from_json(
+            r#"{"nodes": [{"id": "p", "x": 1.0, "y": 2.0}, {"id": "q"}],
+                "edges": [{"source": "q", "target": "p"}]}"#,
+        )
+        .unwrap();
+
+        let v: serde_json::Value = serde_json::from_str(&t.to_json()).unwrap();
+
+        assert_eq!(v["version"], 1);
+        assert_eq!(v["nodes"][0]["x"], 1.0);
+        assert!(v["nodes"][1].get("x").is_none());
+        assert_eq!(v["edges"][0]["source"], "q");
+        assert_eq!(v["edges"][0]["target"], "p");
     }
 
     fn load_err(json: &str) -> Error {
